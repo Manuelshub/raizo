@@ -5,3 +5,4 @@ artifacts/
 typechain-types/
 docs
 .vscode
+.agent

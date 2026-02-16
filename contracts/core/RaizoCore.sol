@@ -1,59 +1,73 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "./interfaces/IRaizoCore.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "../../contracts/core/interfaces/IRaizoCore.sol";
 
 /**
  * @title RaizoCore
- * @notice Central registry for the Raizo protocol sentinel system.
- *         Manages monitored protocols, agent configurations, and global
- *         sentinel parameters (confidence threshold, epoch duration).
+ * @notice Central registry that maps monitored protocols, manages agent registrations, and stores global configuration.
+ * @dev Implementation follows UUPS upgradeable pattern. Stores the source-of-truth for protected assets.
  */
-contract RaizoCore is IRaizoCore, AccessControl {
-
+contract RaizoCore is
+    Initializable,
+    IRaizoCore,
+    AccessControlUpgradeable,
+    UUPSUpgradeable
+{
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
 
     uint16 private constant DEFAULT_CONFIDENCE_THRESHOLD = 8500; // 85%
     uint256 private constant DEFAULT_EPOCH_DURATION = 1 days;
 
-    /// @dev protocol address → config
     mapping(address => ProtocolConfig) private _protocols;
-
-    /// @dev enumerable list of active protocol addresses
     address[] private _protocolList;
-
-    /// @dev agent ID → config
     mapping(bytes32 => AgentConfig) private _agents;
-
-    /// @dev minimum confidence score (basis points) for sentinel actions
     uint16 private _confidenceThreshold;
-
-    /// @dev action budget reset period (seconds)
     uint256 private _epochDuration;
 
-
+    /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _disableInitializers();
+    }
+
+    /**
+     * @notice Initializes the RaizoCore contract.
+     */
+    function initialize() public initializer {
+        __AccessControl_init();
+        __UUPSUpgradeable_init();
+
+        _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _confidenceThreshold = DEFAULT_CONFIDENCE_THRESHOLD;
         _epochDuration = DEFAULT_EPOCH_DURATION;
     }
 
+    /**
+     * @inheritdoc UUPSUpgradeable
+     */
+    function _authorizeUpgrade(
+        address newImplementation
+    ) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
     modifier onlyAdminOrGovernance() {
         if (
             !hasRole(DEFAULT_ADMIN_ROLE, msg.sender) &&
             !hasRole(GOVERNANCE_ROLE, msg.sender)
         ) {
-            revert AccessControlUnauthorizedAccount(
-                msg.sender,
-                GOVERNANCE_ROLE
-            );
+            revert CallerNotAdminOrGovernance(msg.sender);
         }
         _;
     }
 
-    /// @inheritdoc IRaizoCore
+    /**
+     * @notice Registers a new protocol for Raizo monitoring.
+     * @param protocol Target protocol contract address.
+     * @param chainId Chain selector identifier (CCIP format).
+     * @param riskTier Protocol risk profile (1-4).
+     */
     function registerProtocol(
         address protocol,
         uint16 chainId,
@@ -71,13 +85,13 @@ contract RaizoCore is IRaizoCore, AccessControl {
             isActive: true,
             registeredAt: block.timestamp
         });
-
         _protocolList.push(protocol);
-
         emit ProtocolRegistered(protocol, chainId, riskTier);
     }
 
-    /// @inheritdoc IRaizoCore
+    /**
+     * @inheritdoc IRaizoCore
+     */
     function deregisterProtocol(
         address protocol
     ) external override onlyAdminOrGovernance {
@@ -85,21 +99,19 @@ contract RaizoCore is IRaizoCore, AccessControl {
             revert ProtocolNotRegistered(protocol);
 
         _protocols[protocol].isActive = false;
-
-        // Remove from the active list (swap-and-pop)
-        uint256 len = _protocolList.length;
-        for (uint256 i = 0; i < len; i++) {
+        for (uint256 i = 0; i < _protocolList.length; i++) {
             if (_protocolList[i] == protocol) {
-                _protocolList[i] = _protocolList[len - 1];
+                _protocolList[i] = _protocolList[_protocolList.length - 1];
                 _protocolList.pop();
                 break;
             }
         }
-
         emit ProtocolDeregistered(protocol);
     }
 
-    /// @inheritdoc IRaizoCore
+    /**
+     * @inheritdoc IRaizoCore
+     */
     function updateRiskTier(
         address protocol,
         uint8 newTier
@@ -110,18 +122,21 @@ contract RaizoCore is IRaizoCore, AccessControl {
 
         uint8 oldTier = _protocols[protocol].riskTier;
         _protocols[protocol].riskTier = newTier;
-
         emit RiskTierUpdated(protocol, oldTier, newTier);
     }
 
-    /// @inheritdoc IRaizoCore
+    /**
+     * @inheritdoc IRaizoCore
+     */
     function getProtocol(
         address protocol
     ) external view override returns (ProtocolConfig memory) {
         return _protocols[protocol];
     }
 
-    /// @inheritdoc IRaizoCore
+    /**
+     * @inheritdoc IRaizoCore
+     */
     function getAllProtocols()
         external
         view
@@ -136,17 +151,16 @@ contract RaizoCore is IRaizoCore, AccessControl {
         return result;
     }
 
-    /// @inheritdoc IRaizoCore
-    function getProtocolCount() external view override returns (uint256) {
-        return _protocolList.length;
-    }
-
-    /// @inheritdoc IRaizoCore
+    /**
+     * @notice Registers a protective agent in the system.
+     * @param agentId Unique CRE workflow identifier.
+     * @param paymentWallet Account used for x402 payment settlements.
+     * @param dailyBudget Maximum allowed expenditure per 24h (USDC 6 decimals).
+     */
     function registerAgent(
         bytes32 agentId,
         address paymentWallet,
-        uint256 dailyBudget,
-        uint256 actionBudget
+        uint256 dailyBudget
     ) external override onlyRole(DEFAULT_ADMIN_ROLE) {
         if (paymentWallet == address(0)) revert ZeroAddress();
         if (_agents[agentId].isActive) revert AgentAlreadyRegistered(agentId);
@@ -155,62 +169,68 @@ contract RaizoCore is IRaizoCore, AccessControl {
             agentId: agentId,
             paymentWallet: paymentWallet,
             dailyBudgetUSDC: dailyBudget,
-            actionBudgetPerEpoch: actionBudget,
+            actionBudgetPerEpoch: 10, // Default value as not in registerAgent params
             isActive: true
         });
-
         emit AgentRegistered(agentId, paymentWallet);
     }
 
-    /// @inheritdoc IRaizoCore
+    /**
+     * @inheritdoc IRaizoCore
+     */
     function deregisterAgent(
         bytes32 agentId
     ) external override onlyRole(DEFAULT_ADMIN_ROLE) {
         if (!_agents[agentId].isActive) revert AgentNotRegistered(agentId);
-
         _agents[agentId].isActive = false;
-
         emit AgentDeregistered(agentId);
     }
 
-    /// @inheritdoc IRaizoCore
+    /**
+     * @inheritdoc IRaizoCore
+     */
     function getAgent(
         bytes32 agentId
     ) external view override returns (AgentConfig memory) {
         return _agents[agentId];
     }
 
-    /// @inheritdoc IRaizoCore
+    /**
+     * @notice Updates the confidence threshold for protective actions.
+     * @param threshold New threshold in basis points (e.g., 9000 = 90%).
+     */
     function setConfidenceThreshold(
         uint16 threshold
-    ) external override onlyAdminOrGovernance {
+    ) external override onlyRole(GOVERNANCE_ROLE) {
         if (threshold > 10000) revert InvalidThreshold(threshold);
-
-        uint16 oldThreshold = _confidenceThreshold;
         _confidenceThreshold = threshold;
-
-        emit ConfidenceThresholdUpdated(oldThreshold, threshold);
+        emit ConfigUpdated("confidenceThreshold", threshold);
     }
 
-    /// @inheritdoc IRaizoCore
+    /**
+     * @inheritdoc IRaizoCore
+     */
     function setEpochDuration(
         uint256 duration
-    ) external override onlyAdminOrGovernance {
+    ) external override onlyRole(DEFAULT_ADMIN_ROLE) {
         if (duration == 0) revert InvalidEpochDuration(duration);
-
-        uint256 oldDuration = _epochDuration;
         _epochDuration = duration;
-
-        emit EpochDurationUpdated(oldDuration, duration);
+        emit ConfigUpdated("epochDuration", duration);
     }
 
-    /// @inheritdoc IRaizoCore
+    /**
+     * @inheritdoc IRaizoCore
+     */
     function getConfidenceThreshold() external view override returns (uint16) {
         return _confidenceThreshold;
     }
 
-    /// @inheritdoc IRaizoCore
+    /**
+     * @inheritdoc IRaizoCore
+     */
     function getEpochDuration() external view override returns (uint256) {
         return _epochDuration;
     }
+
+    uint256[50] private __gap;
 }
