@@ -1,11 +1,5 @@
 import { ethers } from "ethers";
 
-/**
- * @title Threat Sentinel CRE Workflow
- * @notice Scaffolds the off-chain detection logic for Raizo agents.
- */
-
-// --- Interfaces (from AI_AGENTS.md) ---
 
 export interface TelemetryFrame {
   chainId: number;
@@ -73,8 +67,6 @@ export interface ThreatAssessment {
   evidenceCitations: string[];
 }
 
-// --- Prompt Template ---
-
 const SYSTEM_PROMPT = `
 You are Raizo Sentinel, an autonomous DeFi security analyst. You analyze
 on-chain telemetry and threat intelligence to predict exploits.
@@ -87,7 +79,7 @@ RULES:
 5. Exploit taxonomy: flash_loan, reentrancy, access_control, oracle_manipulation, logic_error, governance_attack.
 `;
 
-// --- Workflow Orchestration ---
+// Workflow Orchestration
 
 export interface WorkflowCapabilities {
   ingestTelemetry?: (
