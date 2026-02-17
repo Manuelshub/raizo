@@ -70,7 +70,7 @@ describe("SentinelActions (Upgradeable)", function () {
       severity: 3,
       confidenceScore: CONFIDENCE_HIGH,
       evidenceHash: ethers.toUtf8Bytes("evidence-cid"),
-      timestamp: Math.floor(Date.now() / 1000),
+      timestamp: (await ethers.provider.getBlock("latest"))!.timestamp,
       donSignatures: "0x" as string,
       ...overrides,
     };

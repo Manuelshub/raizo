@@ -55,7 +55,7 @@ describe("SentinelActions Fuzz Simulation", function () {
         severity: Math.floor(Math.random() * 4) as number,
         confidenceScore: confidence,
         evidenceHash: ethers.toUtf8Bytes("evidence"),
-        timestamp: Math.floor(Date.now() / 1000),
+        timestamp: (await ethers.provider.getBlock("latest"))!.timestamp,
         donSignatures: "0x" as string,
       };
 
