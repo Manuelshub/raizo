@@ -3,7 +3,16 @@ import "@openzeppelin/hardhat-upgrades";
 import { HardhatUserConfig } from "hardhat/types";
 
 const config: HardhatUserConfig = {
-  solidity: "0.8.20",
+  solidity: {
+    version: "0.8.20",
+    settings: {
+      optimizer: {
+        enabled: true,
+        runs: 200,
+      },
+      viaIR: true,
+    },
+  },
   paths: {
     sources: "./contracts",
     tests: "./test",

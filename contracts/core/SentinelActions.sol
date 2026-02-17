@@ -7,6 +7,7 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
 import "../../contracts/core/interfaces/IRaizoCore.sol";
 import "../../contracts/core/interfaces/ISentinelActions.sol";
+import {ICrossChainRelay} from "../bridge/interfaces/ICrossChainRelay.sol";
 
 /**
  * @title SentinelActions
@@ -24,6 +25,7 @@ contract SentinelActions is
     bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
 
     IRaizoCore public raizoCore;
+    ICrossChainRelay public relay;
 
     /**
      * @dev Mapping from report ID to persistence.
@@ -66,6 +68,14 @@ contract SentinelActions is
 
         _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
         raizoCore = IRaizoCore(_raizoCore);
+    }
+
+    /**
+     * @notice Sets the CrossChainRelay address.
+     * @param _relay The ICrossChainRelay contract address.
+     */
+    function setRelay(address _relay) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        relay = ICrossChainRelay(_relay);
     }
 
     /**
@@ -129,6 +139,27 @@ contract SentinelActions is
         if (report.action == ActionType.PAUSE) {
             // In a real system, this would call the target protocol's pause function.
             // For now, we track the state locally.
+        }
+
+        // Cross-chain alert propagation for CRITICAL threats
+        if (
+            report.severity == Severity.CRITICAL && address(relay) != address(0)
+        ) {
+            // In a production environment, destChainSelector would be fetched from
+            // RaizoCore's multi-chain topology config.
+            uint64 destChainSelector = 0; // Placeholder for configured target chain
+            try
+                relay.sendAlert(
+                    destChainSelector,
+                    report.reportId,
+                    report.action,
+                    report.targetProtocol,
+                    "" // Default empty payload for automated relay
+                )
+            {} catch {
+                // In case of relay failure (e.g. gas), we log but don't revert
+                // the primary protective action.
+            }
         }
 
         emit ActionExecuted(
