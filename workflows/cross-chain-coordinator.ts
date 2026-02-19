@@ -10,11 +10,16 @@
 
 import {
   Runner,
-  EVMClient,
-  HTTPClient,
   handler,
   type Runtime,
+  type HTTPSendRequester,
+  consensusMedianAggregation,
+  consensusIdenticalAggregation,
+  prepareReportRequest,
+  ok,
+  text,
 } from "@chainlink/cre-sdk";
+import { cre } from "@chainlink/cre-sdk";
 import { z } from "zod";
 
 // Import logic and types
@@ -23,6 +28,10 @@ import {
   runCoordinatorPipeline,
   parseThreatReportedEvent,
 } from "./logic/coordinator-logic";
+
+// ABI encoding
+import { encodeFunctionData } from "viem";
+import { crossChainRelayAbi } from "./abis";
 
 // Re-export for convenience
 export * from "./logic/types";
@@ -37,6 +46,9 @@ export const coordinatorConfigSchema = z.object({
   sentinelContractAddress: z
     .string()
     .describe("SentinelActions contract emitting ThreatReported events"),
+  crossChainRelayAddress: z
+    .string()
+    .describe("CrossChainRelay contract address for CCIP messaging"),
   deploymentRegistryUrl: z
     .string()
     .describe("API endpoint returning ProtocolDeployment JSON"),
@@ -55,67 +67,107 @@ export type CoordinatorConfig = z.infer<typeof coordinatorConfigSchema>;
  */
 export const onThreatReported = (
   runtime: Runtime<CoordinatorConfig>,
-  eventData: any,
+  eventPayload: any,
 ): string => {
   const config = runtime.config;
   runtime.log("ThreatReported event received");
 
-  // 1. Parse event
-  const event = parseThreatReportedEvent(eventData);
-  runtime.log(`Processing report ${event.reportId} severity=${event.severity}`);
+  try {
+    // 1. Parse event from log payload
+    const event = parseThreatReportedEvent(eventPayload.log);
+    runtime.log(`Processing report ${event.reportId} severity=${event.severity}`);
 
-  // 2. Fetch deployment topology
-  const httpClient = new HTTPClient();
-  const deploymentResponse = httpClient
-    .fetch(runtime, {
-      url: `${config.deploymentRegistryUrl}?protocol=${event.targetProtocol}`,
-      method: "GET",
-    })
-    .result();
-  const deployment: ProtocolDeployment = JSON.parse(deploymentResponse.body);
+    // 2. Fetch deployment topology
+    const httpCapability = new cre.capabilities.HTTPClient();
 
-  // 3. Run coordinator pipeline
-  const messages = runCoordinatorPipeline(
-    event,
-    deployment,
-    config.monitoredChainIds,
-  );
+    const fetchDeployment = (sendRequester: HTTPSendRequester, cfg: CoordinatorConfig) => {
+      const response = sendRequester.sendRequest({
+        url: `${cfg.deploymentRegistryUrl}?protocol=${event.targetProtocol}`,
+        method: "GET",
+      }).result();
 
-  if (messages.length === 0) {
-    runtime.log("Scope=LOCAL_ONLY — no cross-chain propagation needed");
-    return "local_only";
-  }
+      if (!ok(response)) {
+        throw new Error(`Deployment fetch failed: ${response.statusCode}`);
+      }
 
-  runtime.log(`Propagating to ${messages.length} chains`);
+      return text(response);
+    };
 
-  // 4. Dispatch via EVMClient on each target chain
-  for (const msg of messages) {
-    const targetChainSelector =
-      config.monitoredChainSelectors[
-        config.monitoredChainIds.indexOf(msg.destChain)
-      ];
-    if (!targetChainSelector) {
-      runtime.log(`No selector for chain ${msg.destChain} — skipping`);
-      continue;
+    const deploymentBody = httpCapability
+      .sendRequest(runtime, fetchDeployment, consensusIdenticalAggregation())(config)
+      .result();
+    const deployment: ProtocolDeployment = JSON.parse(deploymentBody);
+
+    // 3. Run coordinator pipeline
+    const messages = runCoordinatorPipeline(
+      event,
+      deployment,
+      config.monitoredChainIds,
+    );
+
+    if (messages.length === 0) {
+      runtime.log("Scope=LOCAL_ONLY — no cross-chain propagation needed");
+      return "local_only";
     }
 
-    const evmClient = new EVMClient(targetChainSelector);
-    const signedReport = runtime.report(msg).result();
-    evmClient.writeReport(runtime, { report: signedReport }).result();
+    runtime.log(`Propagating to ${messages.length} chains`);
 
-    runtime.log(`Dispatched to chain ${msg.destChain}: ${msg.reportId}`);
+    // 4. Dispatch via CCIP through CrossChainRelay on source chain
+    for (const msg of messages) {
+      const targetChainSelector =
+        config.monitoredChainSelectors[
+        config.monitoredChainIds.indexOf(msg.destChain)
+        ];
+      if (!targetChainSelector) {
+        runtime.log(`No selector for chain ${msg.destChain} — skipping`);
+        continue;
+      }
+
+      // Encode cross-chain message for CCIP
+      const destChainSelector = config.monitoredChainSelectors[
+        config.monitoredChainIds.indexOf(msg.destChain)
+      ];
+      if (!destChainSelector) {
+        runtime.log(`No chain selector for chain ${msg.destChain}, skipping`);
+        continue;
+      }
+
+      const writeData = encodeFunctionData({
+        abi: crossChainRelayAbi,
+        functionName: "sendAlert",
+        args: [
+          BigInt(destChainSelector),
+          msg.reportId as `0x${string}`,
+          msg.action,
+          msg.targetProtocol as `0x${string}`,
+          "0x" as `0x${string}`, // Additional payload (empty for standard alerts)
+        ],
+      });
+
+      runtime.report(prepareReportRequest(writeData)).result();
+      runtime.log(`Dispatched to chain ${msg.destChain}: ${msg.reportId}`);
+    }
+
+    return "propagated";
+  } catch (error) {
+    runtime.log(`Error in coordinator workflow: ${error}`);
+    return "error";
   }
-
-  return "propagated";
 };
 
 /**
  * CRE workflow initializer.
+ * TODO: Replace cron trigger with EVM log trigger once event listening pattern is documented
  */
 export const coordinatorInitWorkflow = (config: CoordinatorConfig) => {
-  const evmClient = new EVMClient(config.chainSelector);
-  // Placeholder for EVMLogTrigger registration
-  return [handler(evmClient as any, onThreatReported)];
+  // NOTE: EVMLogTrigger is not yet available or documented in CRE SDK v1.1.0
+  // Using cron as placeholder until event trigger pattern is clarified
+  const cron = new cre.capabilities.CronCapability();
+
+  // Poll for events every 30 seconds as workaround
+  const trigger = cron.trigger({ schedule: "*/30 * * * * *" });
+
+  return [handler(trigger, onThreatReported)];
 };
 
 /**

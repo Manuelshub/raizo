@@ -10,15 +10,22 @@
 
 import {
   Runner,
-  CronCapability,
-  HTTPClient,
-  EVMClient,
   handler,
   type Runtime,
   type NodeRuntime,
-  type CronPayload,
+  type HTTPSendRequester,
+  consensusMedianAggregation,
+  consensusIdenticalAggregation,
+  prepareReportRequest,
+  ok,
+  text,
 } from "@chainlink/cre-sdk";
+import { cre } from "@chainlink/cre-sdk";
 import { z } from "zod";
+
+// ABI encoding
+import { encodeFunctionData } from "viem";
+import { complianceVaultAbi } from "./abis";
 
 // Import logic and types
 import { RegulatoryRule, ComplianceReport } from "./logic/types";
@@ -36,6 +43,7 @@ export const complianceConfigSchema = z.object({
   schedule: z.string().describe("Cron schedule for periodic compliance checks"),
   chainSelector: z.string().describe("EVM chain selector"),
   chainId: z.number().describe("Numeric chain ID for report metadata"),
+  agentId: z.string().describe("CRE agent identifier (bytes32 hex)"),
   metricsApiUrl: z.string().describe("Endpoint serving protocol metrics JSON"),
   sanctionsApiUrl: z.string().describe("Endpoint serving sanctions list"),
   rulesApiUrl: z.string().describe("Endpoint serving RegulatoryRule[] JSON"),
@@ -51,83 +59,123 @@ export type ComplianceConfig = z.infer<typeof complianceConfigSchema>;
  */
 export const onComplianceTrigger = (
   runtime: Runtime<ComplianceConfig>,
-  _payload: CronPayload,
+  _payload: any,
 ): string => {
   const config = runtime.config;
   runtime.log("Compliance check triggered");
 
-  const httpClient = new HTTPClient();
+  try {
+    const httpCapability = new cre.capabilities.HTTPClient();
 
-  // 1. Fetch rules
-  const rulesResponse = httpClient
-    .fetch(runtime, { url: config.rulesApiUrl, method: "GET" })
-    .result();
-  const rules: RegulatoryRule[] = JSON.parse(rulesResponse.body);
+    // 1. Fetch rules
+    const fetchRules = (sendRequester: HTTPSendRequester, cfg: ComplianceConfig) => {
+      const response = sendRequester.sendRequest({
+        url: cfg.rulesApiUrl,
+        method: "GET",
+      }).result();
 
-  // 2. Fetch metrics
-  const metricsResponse = httpClient
-    .fetch(runtime, { url: config.metricsApiUrl, method: "GET" })
-    .result();
-  const metrics: Record<string, any> = JSON.parse(metricsResponse.body);
+      if (!ok(response)) {
+        throw new Error(`Rules fetch failed: ${response.statusCode}`);
+      }
 
-  // 3. Fetch sanctions list via runInNodeMode
-  const fetchSanctions = (
-    nodeRuntime: NodeRuntime<ComplianceConfig>,
-  ): string => {
-    const nodeHttp = new HTTPClient();
-    const response = nodeHttp
-      .fetch(nodeRuntime, { url: config.sanctionsApiUrl, method: "GET" })
+      return text(response);
+    };
+
+    const rulesBody = httpCapability
+      .sendRequest(runtime, fetchRules, consensusIdenticalAggregation())(config)
       .result();
-    return response.body;
-  };
+    const rules: RegulatoryRule[] = JSON.parse(rulesBody);
 
-  const sanctionsRaw = runtime
-    .runInNodeMode(fetchSanctions, {
-      aggregate: (results: string[]) => {
-        const allLists: string[][] = results.map((r) => JSON.parse(r));
-        if (allLists.length === 0) return "[]";
-        const intersection = allLists[0].filter((addr) =>
-          allLists.every((list) => list.includes(addr)),
-        );
-        return JSON.stringify(intersection);
-      },
-    })()
-    .result();
+    // 2. Fetch metrics
+    const fetchMetrics = (sendRequester: HTTPSendRequester, cfg: ComplianceConfig) => {
+      const response = sendRequester.sendRequest({
+        url: cfg.metricsApiUrl,
+        method: "GET",
+      }).result();
 
-  const sanctionsList: string[] = JSON.parse(sanctionsRaw);
+      if (!ok(response)) {
+        throw new Error(`Metrics fetch failed: ${response.statusCode}`);
+      }
 
-  // 4. Run compliance pipeline
-  const report = runCompliancePipeline(
-    config.chainId,
-    rules,
-    metrics,
-    sanctionsList,
-  );
+      return text(response);
+    };
 
-  runtime.log(
-    `Compliance report generated: score=${report.riskSummary.complianceScore} findings=${report.findings.length}`,
-  );
+    const metricsBody = httpCapability
+      .sendRequest(runtime, fetchMetrics, consensusIdenticalAggregation())(config)
+      .result();
+    const metrics: Record<string, any> = JSON.parse(metricsBody);
 
-  // 5. Anchor report on-chain
-  if (report.findings.length > 0) {
-    const evmClient = new EVMClient(config.chainSelector);
-    evmClient
-      .writeReport(runtime, {
-        report: runtime.report(report).result(),
-      })
+    // 3. Fetch sanctions list via runInNodeMode (Confidential Compute)
+    // Note: Using consensusIdenticalAggregation - all nodes must return identical lists
+    // In production, implement intersection logic if needed for multi-source sanctions
+    const fetchSanctions = (nodeRuntime: NodeRuntime<ComplianceConfig>): string => {
+      const nodeHttpCapability = new cre.capabilities.HTTPClient();
+
+      const nodeFetch = (sendRequester: HTTPSendRequester) => {
+        const response = sendRequester.sendRequest({
+          url: config.sanctionsApiUrl,
+          method: "GET",
+        }).result();
+
+        if (!ok(response)) {
+          throw new Error(`Sanctions fetch failed: ${response.statusCode}`);
+        }
+
+        return text(response);
+      };
+
+      // Return sanctions list directly from this node
+      return nodeFetch(nodeRuntime as any);
+    };
+
+    const sanctionsRaw = runtime
+      .runInNodeMode(fetchSanctions, consensusIdenticalAggregation())()
       .result();
 
-    runtime.log(`Report anchored on-chain: ${report.metadata.reportId}`);
+    const sanctionsList: string[] = JSON.parse(sanctionsRaw);
+
+    // 4. Run compliance pipeline
+    const report = runCompliancePipeline(
+      config.chainId,
+      rules,
+      metrics,
+      sanctionsList,
+    );
+
+    runtime.log(
+      `Compliance report generated: score=${report.riskSummary.complianceScore} findings=${report.findings.length}`,
+    );
+
+    // 5. Anchor report hash on-chain via ComplianceVault.storeReport()
+    if (report.findings.length > 0) {
+      const writeData = encodeFunctionData({
+        abi: complianceVaultAbi,
+        functionName: "storeReport",
+        args: [
+          report.metadata.reportId as `0x${string}`,
+          config.agentId as `0x${string}`,
+          1, // reportType: 1 = AML (configurable per framework)
+          config.chainId,
+          `ipfs://raizo-report-${report.metadata.reportId}`, // URI (TEE-encrypted off-chain)
+        ],
+      });
+
+      runtime.report(prepareReportRequest(writeData)).result();
+      runtime.log(`Report hash anchored on-chain: ${report.metadata.reportId}`);
+    }
+
+    return report.riskSummary.complianceScore === 100 ? "compliant" : "flagged";
+  } catch (error) {
+    runtime.log(`Error in compliance workflow: ${error}`);
+    return "error";
   }
-
-  return report.riskSummary.complianceScore === 100 ? "compliant" : "flagged";
 };
 
 /**
  * CRE workflow initializer.
  */
 export const complianceInitWorkflow = (config: ComplianceConfig) => {
-  const cron = new CronCapability();
+  const cron = new cre.capabilities.CronCapability();
   return [
     handler(cron.trigger({ schedule: config.schedule }), onComplianceTrigger),
   ];

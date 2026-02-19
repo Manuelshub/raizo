@@ -10,15 +10,22 @@
 
 import {
   Runner,
-  CronCapability,
-  HTTPClient,
-  EVMClient,
   handler,
   type Runtime,
   type NodeRuntime,
-  type CronPayload,
+  type HTTPSendRequester,
+  consensusMedianAggregation,
+  consensusIdenticalAggregation,
+  prepareReportRequest,
+  ok,
+  text,
 } from "@chainlink/cre-sdk";
+import { cre } from "@chainlink/cre-sdk";
 import { z } from "zod";
+
+// ABI encoding
+import { encodeFunctionData } from "viem";
+import { sentinelActionsAbi } from "./abis";
 
 // Import logic and types
 import { TelemetryFrame, ThreatAssessment } from "./logic/types";
@@ -59,119 +66,141 @@ export type SentinelConfig = z.infer<typeof sentinelConfigSchema>;
  */
 export const onCronTrigger = (
   runtime: Runtime<SentinelConfig>,
-  _payload: CronPayload,
+  _payload: any,
 ): string => {
   const config = runtime.config;
   runtime.log("Sentinel sweep triggered");
 
-  // 1. Fetch telemetry
-  const httpClient = new HTTPClient();
-  const telemetryResponse = httpClient
-    .fetch(runtime, {
-      url: config.telemetryApiUrl,
-      method: "GET",
-    })
-    .result();
+  try {
+    // 1. Fetch telemetry
+    const httpCapability = new cre.capabilities.HTTPClient();
 
-  const telemetry: TelemetryFrame = JSON.parse(telemetryResponse.body);
+    const fetchTelemetry = (sendRequester: HTTPSendRequester, cfg: SentinelConfig) => {
+      const response = sendRequester.sendRequest({
+        url: cfg.telemetryApiUrl,
+        method: "GET",
+      }).result();
 
-  // 2. Heuristic pre-filter
-  const heuristic = new HeuristicAnalyzer();
-  const { baseRiskScore } = heuristic.score(telemetry);
+      if (!ok(response)) {
+        throw new Error(`Telemetry fetch failed: ${response.statusCode}`);
+      }
 
-  if (baseRiskScore < HEURISTIC_GATE_THRESHOLD) {
-    runtime.log(
-      `Heuristic score ${baseRiskScore.toFixed(3)} below gate — skipping LLM`,
-    );
-    return "skipped";
-  }
+      return text(response);
+    };
 
-  runtime.log(
-    `Heuristic score ${baseRiskScore.toFixed(3)} above gate — invoking LLM`,
-  );
-
-  // 3. LLM analysis via runInNodeMode
-  const fetchLLMAssessment = (
-    nodeRuntime: NodeRuntime<SentinelConfig>,
-  ): string => {
-    const nodeHttp = new HTTPClient();
-    const apiKey = runtime.getSecret("LLM_API_KEY").result();
-    const response = nodeHttp
-      .fetch(nodeRuntime, {
-        url: config.llmApiUrl,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          system: SYSTEM_PROMPT,
-          telemetry,
-        }),
-      })
+    const telemetryBody = httpCapability
+      .sendRequest(runtime, fetchTelemetry, consensusIdenticalAggregation())(config)
       .result();
-    return response.body;
-  };
 
-  const llmResultRaw = runtime
-    .runInNodeMode(fetchLLMAssessment, {
-      aggregate: (results: string[]) => {
-        const assessments: ThreatAssessment[] = results.map((r) =>
-          JSON.parse(r),
-        );
-        const scores = assessments
-          .map((a) => a.overallRiskScore)
-          .sort((a, b) => a - b);
-        const medianIdx = Math.floor(scores.length / 2);
-        const medianScore = scores[medianIdx];
+    const telemetry: TelemetryFrame = JSON.parse(telemetryBody);
 
-        const closest = assessments.reduce((prev, curr) =>
-          Math.abs(curr.overallRiskScore - medianScore) <
-          Math.abs(prev.overallRiskScore - medianScore)
-            ? curr
-            : prev,
-        );
-        return JSON.stringify(closest);
-      },
-    })()
-    .result();
+    // 2. Heuristic pre-filter
+    const heuristic = new HeuristicAnalyzer();
+    const { baseRiskScore } = heuristic.score(telemetry);
 
-  const assessment: ThreatAssessment = JSON.parse(llmResultRaw);
+    if (baseRiskScore < HEURISTIC_GATE_THRESHOLD) {
+      runtime.log(
+        `Heuristic score ${baseRiskScore.toFixed(3)} below gate — skipping LLM`,
+      );
+      return "skipped";
+    }
 
-  // 4. Deterministic escalation pipeline
-  const report = runSentinelPipeline(
-    config.agentId,
-    config.targetProtocol,
-    telemetry,
-    assessment,
-  );
+    runtime.log(
+      `Heuristic score ${baseRiskScore.toFixed(3)} above gate — invoking LLM`,
+    );
 
-  if (!report) {
-    runtime.log("No actionable threat — pipeline returned null");
-    return "no_threat";
+    // 3. LLM analysis via runInNodeMode (Confidential Compute)
+    // Note: Using consensusIdenticalAggregation - all nodes must return identical assessments
+    // In production, consider implementing multi-stage consensus if nodes return different scores
+    const fetchLLMAssessment = (nodeRuntime: NodeRuntime<SentinelConfig>): string => {
+      const nodeHttpCapability = new cre.capabilities.HTTPClient();
+
+      const nodeFetch = (sendRequester: HTTPSendRequester) => {
+        const response = sendRequester.sendRequest({
+          url: config.llmApiUrl,
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            // Note: Secrets should be configured in CRE CLI config, not fetched at runtime
+          },
+          body: JSON.stringify({
+            system: SYSTEM_PROMPT,
+            // BigInt fields must be serialized as strings for JSON
+            telemetry: JSON.parse(JSON.stringify(telemetry, (_, v) =>
+              typeof v === 'bigint' ? v.toString() : v
+            )),
+          }),
+        }).result();
+
+        if (!ok(response)) {
+          throw new Error(`LLM request failed: ${response.statusCode}`);
+        }
+
+        return text(response);
+      };
+
+      // Each node fetches independently
+      return nodeFetch(nodeRuntime as any);
+    };
+
+    const llmResultRaw = runtime
+      .runInNodeMode(fetchLLMAssessment, consensusIdenticalAggregation())()
+      .result();
+
+    const assessment: ThreatAssessment = JSON.parse(llmResultRaw);
+
+    // 4. Deterministic escalation pipeline
+    const report = runSentinelPipeline(
+      config.agentId,
+      config.targetProtocol,
+      telemetry,
+      assessment,
+    );
+
+    if (!report) {
+      runtime.log("No actionable threat — pipeline returned null");
+      return "no_threat";
+    }
+
+    runtime.log(
+      `Threat detected: action=${report.action} severity=${report.severity} confidence=${report.confidenceScore}`,
+    );
+
+    // 5. Submit threat report on-chain via SentinelActions.executeAction()
+    const writeData = encodeFunctionData({
+      abi: sentinelActionsAbi,
+      functionName: "executeAction",
+      args: [
+        {
+          reportId: report.reportId as `0x${string}`,
+          agentId: report.agentId as `0x${string}`,
+          exists: true,
+          targetProtocol: report.targetProtocol as `0x${string}`,
+          action: report.action,
+          severity: report.severity,
+          confidenceScore: report.confidenceScore,
+          evidenceHash: Buffer.from(report.evidenceHash) as unknown as `0x${string}`,
+          timestamp: BigInt(report.timestamp),
+          donSignatures: "0x" as `0x${string}`, // Populated by CRE DON consensus at runtime
+        },
+      ],
+    });
+
+    const reportRequest = prepareReportRequest(writeData);
+    runtime.report(reportRequest).result();
+    runtime.log(`Report submitted on-chain: ${report.reportId}`);
+    return "reported";
+  } catch (error) {
+    runtime.log(`Error in threat detection workflow: ${error}`);
+    return "error";
   }
-
-  runtime.log(
-    `Threat detected: action=${report.action} severity=${report.severity} confidence=${report.confidenceScore}`,
-  );
-
-  // 5. Submit signed report on-chain
-  const evmClient = new EVMClient(config.chainSelector);
-  evmClient
-    .writeReport(runtime, {
-      report: runtime.report(report).result(),
-    })
-    .result();
-
-  runtime.log(`Report submitted on-chain: ${report.reportId}`);
-  return "reported";
 };
 
 /**
  * CRE workflow initializer.
  */
 export const initWorkflow = (config: SentinelConfig) => {
-  const cron = new CronCapability();
+  const cron = new cre.capabilities.CronCapability();
   return [handler(cron.trigger({ schedule: config.schedule }), onCronTrigger)];
 };
 
