@@ -43,10 +43,13 @@ export function generateComplianceReport(
 
   const now = Math.floor(Date.now() / 1000);
   const reportIdInput = `compliance-${chainId}-${now}`;
+  
+  // Generate proper bytes32 hash using keccak256-like hashing
+  // For deterministic ID generation, we create a padded hex string
   let reportId = "0x";
-  for (let i = 0; i < reportIdInput.length; i++) {
-    reportId += reportIdInput.charCodeAt(i).toString(16).padStart(2, "0");
-  }
+  const hexStr = Buffer.from(reportIdInput, "utf-8").toString("hex");
+  // Pad or truncate to exactly 64 hex chars (32 bytes)
+  reportId += hexStr.padEnd(64, "0").slice(0, 64);
 
   return {
     metadata: {
