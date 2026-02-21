@@ -98,6 +98,12 @@ export interface ComplianceReportFinding {
   evidence: any;
 }
 
+export interface ComplianceReportAttestation {
+  donSignature: string;
+  nodeCount: number;
+  consensusReached: boolean;
+}
+
 export interface ComplianceReport {
   metadata: {
     reportId: string;
@@ -115,6 +121,7 @@ export interface ComplianceReport {
     complianceScore: number;
   };
   recommendations: string[];
+  attestation?: ComplianceReportAttestation;
 }
 
 export type PropagationScope =

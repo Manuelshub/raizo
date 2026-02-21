@@ -1,0 +1,18 @@
+{
+  "schedule": "*/30 * * * * *",
+  "chainSelector": "5009297550715157269",
+  "telemetryApiUrl": "https://api.raizo.io/telemetry",
+  "llmApiUrl": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent",
+  "sentinelContractAddress": "0x0000000000000000000000000000000000000001",
+  "agentId": "0x53454e54494e454c0000000000000000000000000000000000000000000000001",
+  "targetProtocol": "0x0000000000000000000000000000000000000002",
+  "confidenceThreshold": 0.85,
+  "heuristicGateThreshold": 0.3,
+  "llmProvider": "google",
+  "llmModel": "gemini-3-flash-preview",
+  "maxRetries": 3,
+  "timeoutMs": 14000,
+  "enablePerformanceMonitoring": true,
+  "gasLimit": 150000,
+  "priorityFee": "2"
+}

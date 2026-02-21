@@ -14,7 +14,7 @@ import {
   type Runtime,
   type NodeRuntime,
   type HTTPSendRequester,
-  consensusMedianAggregation,
+  type SecretsProvider,
   consensusIdenticalAggregation,
   prepareReportRequest,
   ok,
@@ -25,21 +25,20 @@ import { z } from "zod";
 
 // ABI encoding
 import { encodeFunctionData } from "viem";
-import { complianceVaultAbi } from "./abis";
+import { complianceVaultAbi } from "../abis";
 
 // Import logic and types
-import { RegulatoryRule, ComplianceReport } from "./logic/types";
-import { runCompliancePipeline } from "./logic/compliance-logic";
+import { RegulatoryRule, ComplianceReport } from "../logic/types";
+import { runCompliancePipeline, FRAMEWORK_REPORT_TYPE } from "../logic/compliance-logic";
 
-// Re-export for convenience
-export * from "./logic/types";
-export * from "./logic/compliance-logic";
+// Logic and types are available via ../logic/ imports directly
+// (CRE WASM compiler only supports exporting main())
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CRE Workflow Entry Points
 // ═══════════════════════════════════════════════════════════════════════════
 
-export const complianceConfigSchema = z.object({
+const complianceConfigSchema = z.object({
   schedule: z.string().describe("Cron schedule for periodic compliance checks"),
   chainSelector: z.string().describe("EVM chain selector"),
   chainId: z.number().describe("Numeric chain ID for report metadata"),
@@ -52,12 +51,12 @@ export const complianceConfigSchema = z.object({
     .describe("ComplianceVault contract address"),
 });
 
-export type ComplianceConfig = z.infer<typeof complianceConfigSchema>;
+type ComplianceConfig = z.infer<typeof complianceConfigSchema>;
 
 /**
  * CRE callback: fired on every cron tick.
  */
-export const onComplianceTrigger = (
+const onComplianceTrigger = (
   runtime: Runtime<ComplianceConfig>,
   _payload: any,
 ): string => {
@@ -148,13 +147,17 @@ export const onComplianceTrigger = (
 
     // 5. Anchor report hash on-chain via ComplianceVault.storeReport()
     if (report.findings.length > 0) {
+      // Derive reportType from the dominant framework of fired rules
+      const dominantFramework = report.metadata.framework.split("/")[0];
+      const reportType = FRAMEWORK_REPORT_TYPE[dominantFramework] ?? 1;
+
       const writeData = encodeFunctionData({
         abi: complianceVaultAbi,
         functionName: "storeReport",
         args: [
           report.metadata.reportId as `0x${string}`,
           config.agentId as `0x${string}`,
-          1, // reportType: 1 = AML (configurable per framework)
+          reportType,
           config.chainId,
           `ipfs://raizo-report-${report.metadata.reportId}`, // URI (TEE-encrypted off-chain)
         ],
@@ -174,7 +177,7 @@ export const onComplianceTrigger = (
 /**
  * CRE workflow initializer.
  */
-export const complianceInitWorkflow = (config: ComplianceConfig) => {
+const complianceInitWorkflow = (config: ComplianceConfig, _secretsProvider: SecretsProvider) => {
   const cron = new cre.capabilities.CronCapability();
   return [
     handler(cron.trigger({ schedule: config.schedule }), onComplianceTrigger),
@@ -186,7 +189,8 @@ export const complianceInitWorkflow = (config: ComplianceConfig) => {
  */
 export async function main() {
   const runner = await Runner.newRunner<ComplianceConfig>({
-    configSchema: complianceConfigSchema,
+    configParser: (raw: Uint8Array) =>
+      complianceConfigSchema.parse(JSON.parse(new TextDecoder().decode(raw))),
   });
   await runner.run(complianceInitWorkflow);
 }

@@ -1,0 +1,23 @@
+{
+  "schedule": "0 0 * * *",
+  "chainSelector": "5009297550715157269",
+  "chainId": 1,
+  "agentId": "0x434f4d504c49414e4345000000000000000000000000000000000000000000002",
+  "metricsApiUrl": "https://api.raizo.io/metrics",
+  "sanctionsApiUrl": "https://api.raizo.io/sanctions",
+  "rulesApiUrl": "https://api.raizo.io/rules",
+  "complianceVaultAddress": "0x0000000000000000000000000000000000000003",
+  "frameworks": ["AML", "KYC", "ESG", "MiCA", "SEC"],
+  "reportTypes": {
+    "AML": 1,
+    "KYC": 2,
+    "ESG": 3,
+    "MiCA": 4,
+    "SEC": 5
+  },
+  "confidenceThreshold": 0.9,
+  "enableTee": true,
+  "maxRetries": 3,
+  "timeoutMs": 300000,
+  "enablePerformanceMonitoring": true
+}

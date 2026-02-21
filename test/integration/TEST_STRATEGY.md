@@ -107,7 +107,7 @@ Raizo spans four distinct execution boundaries:
 **Assertions:**
 - ✅ LLM called but returns `overallRiskScore < 0.85`
 - ✅ `runSentinelPipeline()` returns `null`
-- ✅ No on-chain write
+- ✅ No on-chain writeu
 - ✅ Workflow returns `"no_threat"`
 
 ---

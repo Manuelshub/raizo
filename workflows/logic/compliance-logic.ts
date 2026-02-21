@@ -2,6 +2,7 @@ import {
   RegulatoryRule,
   ComplianceReportFinding,
   ComplianceReport,
+  ComplianceReportAttestation,
 } from "./types";
 
 export * from "./types";
@@ -30,9 +31,46 @@ export function evaluateRule(
   }
 }
 
+/** Maps rule frameworks to on-chain reportType enum values used by ComplianceVault */
+export const FRAMEWORK_REPORT_TYPE: Record<string, number> = {
+  AML: 1,
+  KYC: 2,
+  ESG: 3,
+  MiCA: 4,
+  SEC: 5,
+};
+
+/**
+ * Derives the dominant framework from the fired rules' ruleIds.
+ * Falls back to "AML" if no framework prefix is detectable.
+ */
+export function deriveFramework(findings: ComplianceReportFinding[], rules: RegulatoryRule[]): string {
+  if (findings.length === 0) return "MiCA/AML";
+
+  // Build a map of ruleId → framework from the full ruleset
+  const ruleFrameworkMap = new Map<string, string>();
+  for (const rule of rules) {
+    ruleFrameworkMap.set(rule.ruleId, rule.framework);
+  }
+
+  // Count frameworks among fired findings
+  const frameworkCounts = new Map<string, number>();
+  for (const f of findings) {
+    const fw = ruleFrameworkMap.get(f.ruleId) ?? "AML";
+    frameworkCounts.set(fw, (frameworkCounts.get(fw) ?? 0) + 1);
+  }
+
+  // Return dominant framework, or combined string if multiple
+  const sorted = [...frameworkCounts.entries()].sort((a, b) => b[1] - a[1]);
+  if (sorted.length === 1) return sorted[0][0];
+  return sorted.map(([fw]) => fw).join("/");
+}
+
 export function generateComplianceReport(
   chainId: number,
   findings: ComplianceReportFinding[],
+  attestation?: ComplianceReportAttestation,
+  rules?: RegulatoryRule[],
 ): ComplianceReport {
   const violationCount = findings.filter(
     (f) => f.severity === "violation",
@@ -40,6 +78,9 @@ export function generateComplianceReport(
   const warningCount = findings.filter((f) => f.severity === "warning").length;
 
   const score = Math.max(0, 100 - violationCount * 20 - warningCount * 5);
+
+  // Derive framework from the rules that actually fired
+  const framework = rules ? deriveFramework(findings, rules) : "MiCA/AML";
 
   const now = Math.floor(Date.now() / 1000);
   const reportIdInput = `compliance-${chainId}-${now}`;
@@ -51,11 +92,11 @@ export function generateComplianceReport(
   // Pad or truncate to exactly 64 hex chars (32 bytes)
   reportId += hexStr.padEnd(64, "0").slice(0, 64);
 
-  return {
+  const report: ComplianceReport = {
     metadata: {
       reportId,
       generatedAt: now,
-      framework: "MiCA/AML",
+      framework,
       coverageChains: [chainId],
       periodStart: now - 86400,
       periodEnd: now,
@@ -72,6 +113,12 @@ export function generateComplianceReport(
         ? ["Review flagged transactions", "Update risk parameters"]
         : [],
   };
+
+  if (attestation) {
+    report.attestation = attestation;
+  }
+
+  return report;
 }
 
 export function runCompliancePipeline(
@@ -95,5 +142,5 @@ export function runCompliancePipeline(
     }
   }
 
-  return generateComplianceReport(chainId, findings);
+  return generateComplianceReport(chainId, findings, undefined, rules);
 }

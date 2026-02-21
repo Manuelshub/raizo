@@ -1,0 +1,25 @@
+{
+  "schedule": "0 0 * * *",
+  "chainSelector": "16015286601757825753",
+  "chainId": 1,
+  "agentId": "0x434f4d504c49414e4345000000000000000000000000000000000000000002",
+  "metricsApiUrl": "http://localhost:4200/metrics",
+  "sanctionsApiUrl": "http://localhost:4200/sanctions",
+  "rulesApiUrl": "http://localhost:4200/rules",
+  "complianceVaultAddress": "0xE2E65E978F0D0000a47Aa2B1cA17F52d2b5831c6",
+  "frameworks": ["AML", "KYC", "ESG", "MiCA", "SEC"],
+  "reportTypes": {
+    "AML": 1,
+    "KYC": 2,
+    "ESG": 3,
+    "MiCA": 4,
+    "SEC": 5
+  },
+  "confidenceThreshold": 0.9,
+  "enableTee": true,
+  "maxRetries": 3,
+  "timeoutMs": 300000,
+  "enablePerformanceMonitoring": true,
+  "debugMode": true,
+  "mockApis": true
+}

@@ -14,6 +14,7 @@ import {
   type Runtime,
   type NodeRuntime,
   type HTTPSendRequester,
+  type SecretsProvider,
   consensusMedianAggregation,
   consensusIdenticalAggregation,
   prepareReportRequest,
@@ -25,20 +26,19 @@ import { z } from "zod";
 
 // ABI encoding
 import { encodeFunctionData } from "viem";
-import { sentinelActionsAbi } from "./abis";
+import { sentinelActionsAbi } from "../abis";
 
 // Import logic and types
-import { TelemetryFrame, ThreatAssessment } from "./logic/types";
+import { TelemetryFrame, ThreatAssessment } from "../logic/types";
 import {
   HeuristicAnalyzer,
   runSentinelPipeline,
   HEURISTIC_GATE_THRESHOLD,
-  SYSTEM_PROMPT,
-} from "./logic/threat-logic";
+  buildSystemPrompt,
+} from "../logic/threat-logic";
 
-// Re-export logic and types for convenience
-export * from "./logic/types";
-export * from "./logic/threat-logic";
+// Logic and types are available via ../logic/ imports directly
+// (CRE WASM compiler only supports exporting main())
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CRE Workflow Entry Points
@@ -47,7 +47,7 @@ export * from "./logic/threat-logic";
 /**
  * Zod config schema validated by Runner at startup.
  */
-export const sentinelConfigSchema = z.object({
+const sentinelConfigSchema = z.object({
   schedule: z.string().describe("Cron schedule for periodic sentinel sweeps"),
   chainSelector: z.string().describe("EVM chain selector for EVMClient"),
   telemetryApiUrl: z.string().describe("Endpoint serving TelemetryFrame JSON"),
@@ -57,14 +57,20 @@ export const sentinelConfigSchema = z.object({
     .describe("SentinelActions contract address"),
   agentId: z.string().describe("Unique agent identifier"),
   targetProtocol: z.string().describe("Protocol address to monitor"),
+  confidenceThreshold: z
+    .number()
+    .min(0)
+    .max(1)
+    .default(0.85)
+    .describe("LLM confidence threshold — scores above this trigger protective action (spec §3.3)"),
 });
 
-export type SentinelConfig = z.infer<typeof sentinelConfigSchema>;
+type SentinelConfig = z.infer<typeof sentinelConfigSchema>;
 
 /**
  * CRE callback: fired on every cron tick.
  */
-export const onCronTrigger = (
+const onCronTrigger = (
   runtime: Runtime<SentinelConfig>,
   _payload: any,
 ): string => {
@@ -121,10 +127,10 @@ export const onCronTrigger = (
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            // Note: Secrets should be configured in CRE CLI config, not fetched at runtime
+            "x-goog-api-key": runtime.getSecret({ id: "LLM_API_KEY", namespace: "raizo" }).result().value,
           },
           body: JSON.stringify({
-            system: SYSTEM_PROMPT,
+            system: buildSystemPrompt(config.confidenceThreshold),
             // BigInt fields must be serialized as strings for JSON
             telemetry: JSON.parse(JSON.stringify(telemetry, (_, v) =>
               typeof v === 'bigint' ? v.toString() : v
@@ -199,7 +205,7 @@ export const onCronTrigger = (
 /**
  * CRE workflow initializer.
  */
-export const initWorkflow = (config: SentinelConfig) => {
+const initWorkflow = (config: SentinelConfig, _secretsProvider: SecretsProvider) => {
   const cron = new cre.capabilities.CronCapability();
   return [handler(cron.trigger({ schedule: config.schedule }), onCronTrigger)];
 };
@@ -209,7 +215,8 @@ export const initWorkflow = (config: SentinelConfig) => {
  */
 export async function main() {
   const runner = await Runner.newRunner<SentinelConfig>({
-    configSchema: sentinelConfigSchema,
+    configParser: (raw: Uint8Array) =>
+      sentinelConfigSchema.parse(JSON.parse(new TextDecoder().decode(raw))),
   });
   await runner.run(initWorkflow);
 }

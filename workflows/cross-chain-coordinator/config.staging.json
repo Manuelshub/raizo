@@ -1,0 +1,19 @@
+{
+  "schedule": "*/30 * * * * *",
+  "chainSelector": "16015286601757825753",
+  "agentId": "0x434f4f5244494e41544f5200000000000000000000000000000000000000003",
+  "sentinelContractAddress": "0x5c84Cdaed1441e067581087c9895655f9CE87AdA",
+  "crossChainRelayAddress": "0x94032a470BB84b14c02bb50FE2b894eB10Dc407F",
+  "deploymentRegistryUrl": "http://localhost:4200/deployments",
+  "monitoredChainSelectors": ["16015286601757825753", "10344971235874465080"],
+  "monitoredChainIds": [1, 84532],
+  "maxRetries": 3,
+  "timeoutMs": 60000,
+  "enablePerformanceMonitoring": true,
+  "gasLimit": 100000,
+  "priorityFee": "1",
+  "messageDeduplicationWindow": 300,
+  "enableRateLimiting": true,
+  "debugMode": true,
+  "mockCcip": true
+}

@@ -13,6 +13,7 @@ import {
   handler,
   type Runtime,
   type HTTPSendRequester,
+  type SecretsProvider,
   consensusMedianAggregation,
   consensusIdenticalAggregation,
   prepareReportRequest,
@@ -23,26 +24,32 @@ import { cre } from "@chainlink/cre-sdk";
 import { z } from "zod";
 
 // Import logic and types
-import { ThreatEvent, ProtocolDeployment } from "./logic/types";
+import { ThreatEvent, ProtocolDeployment } from "../logic/types";
 import {
   runCoordinatorPipeline,
   parseThreatReportedEvent,
-} from "./logic/coordinator-logic";
+} from "../logic/coordinator-logic";
 
 // ABI encoding
 import { encodeFunctionData } from "viem";
-import { crossChainRelayAbi } from "./abis";
+import { crossChainRelayAbi } from "../abis";
 
-// Re-export for convenience
-export * from "./logic/types";
-export * from "./logic/coordinator-logic";
+// Logic and types are available via ../logic/ imports directly
+// (CRE WASM compiler only supports exporting main())
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CRE Workflow Entry Points
 // ═══════════════════════════════════════════════════════════════════════════
 
-export const coordinatorConfigSchema = z.object({
+const coordinatorConfigSchema = z.object({
+  schedule: z
+    .string()
+    .default("*/30 * * * * *")
+    .describe("Cron schedule — temporary polling interval until EVM Log Trigger is available"),
   chainSelector: z.string().describe("Source chain selector for EVMClient"),
+  agentId: z
+    .string()
+    .describe("CRE agent identifier (bytes32 hex) — required for on-chain registration per spec §6.1"),
   sentinelContractAddress: z
     .string()
     .describe("SentinelActions contract emitting ThreatReported events"),
@@ -60,12 +67,12 @@ export const coordinatorConfigSchema = z.object({
     .describe("Numeric chain IDs for monitored chains"),
 });
 
-export type CoordinatorConfig = z.infer<typeof coordinatorConfigSchema>;
+type CoordinatorConfig = z.infer<typeof coordinatorConfigSchema>;
 
 /**
  * CRE callback: fired when a ThreatReported event is emitted on-chain.
  */
-export const onThreatReported = (
+const onThreatReported = (
   runtime: Runtime<CoordinatorConfig>,
   eventPayload: any,
 ): string => {
@@ -159,13 +166,13 @@ export const onThreatReported = (
  * CRE workflow initializer.
  * TODO: Replace cron trigger with EVM log trigger once event listening pattern is documented
  */
-export const coordinatorInitWorkflow = (config: CoordinatorConfig) => {
+const coordinatorInitWorkflow = (config: CoordinatorConfig, _secretsProvider: SecretsProvider) => {
   // NOTE: EVMLogTrigger is not yet available or documented in CRE SDK v1.1.0
   // Using cron as placeholder until event trigger pattern is clarified
   const cron = new cre.capabilities.CronCapability();
 
-  // Poll for events every 30 seconds as workaround
-  const trigger = cron.trigger({ schedule: "*/30 * * * * *" });
+  // Poll interval sourced from config (temporary until EVM Log Trigger support)
+  const trigger = cron.trigger({ schedule: config.schedule });
 
   return [handler(trigger, onThreatReported)];
 };
@@ -175,7 +182,8 @@ export const coordinatorInitWorkflow = (config: CoordinatorConfig) => {
  */
 export async function main() {
   const runner = await Runner.newRunner<CoordinatorConfig>({
-    configSchema: coordinatorConfigSchema,
+    configParser: (raw: Uint8Array) =>
+      coordinatorConfigSchema.parse(JSON.parse(new TextDecoder().decode(raw))),
   });
   await runner.run(coordinatorInitWorkflow);
 }

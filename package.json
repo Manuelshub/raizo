@@ -5,7 +5,9 @@
   "scripts": {
     "test": "hardhat test",
     "compile": "hardhat compile",
+    "coverage": "hardhat coverage",
     "deploy": "hardhat run scripts/deploy.ts",
+    "gas-report": "REPORT_GAS=true hardhat test",
     "node": "hardhat node"
   },
   "devDependencies": {

@@ -143,9 +143,11 @@ describe("Cross-Chain Coordinator — Workflow Correctness", function () {
         );
 
         expect(result.status).to.equal("propagated");
-        // SAME_PROTOCOL scope uses resolveTargetChains(monitoredChains, exclude source).
-        // Monitored=[1,8453,42161], source=1 → 2 destination chains (8453, 42161).
-        expect(result.messages!.length).to.equal(2);
+        // SAME_PROTOCOL scope: only propagate to chains where the protocol is
+        // deployed (deployment.chains=[1,8453]) minus source (1) → [8453] only.
+        // Arbitrum (42161) is monitored but not a deployment chain → excluded.
+        expect(result.messages!.length).to.equal(1);
+        expect(result.messages![0].destChain).to.equal(8453);
         for (const msg of result.messages!) {
             expect(msg.destChain).to.not.equal(1); // Never propagate back to source
         }

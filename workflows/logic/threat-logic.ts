@@ -2,17 +2,24 @@ import { TelemetryFrame, ThreatAssessment, RecommendedAction } from "./types";
 
 export * from "./types";
 
-export const SYSTEM_PROMPT = `
+export const DEFAULT_CONFIDENCE_THRESHOLD = 0.85;
+
+export function buildSystemPrompt(confidenceThreshold: number = DEFAULT_CONFIDENCE_THRESHOLD): string {
+  return `
 You are Raizo Sentinel, an autonomous DeFi security analyst. You analyze
 on-chain telemetry and threat intelligence to predict exploits.
 
 RULES:
 1. Output ONLY valid JSON matching the ThreatAssessment schema.
 2. Do NOT hallucinate data — if uncertain, assign lower confidence scores.
-3. A confidence score above 0.85 triggers protective action.
+3. A confidence score above ${confidenceThreshold} triggers protective action.
 4. Always cite evidence from the telemetry frame.
 5. Exploit taxonomy: flash_loan, reentrancy, access_control, oracle_manipulation, logic_error, governance_attack.
 `;
+}
+
+/** Default prompt using the standard 0.85 threshold — backward-compatible */
+export const SYSTEM_PROMPT = buildSystemPrompt();
 
 const ACTION_THRESHOLDS: {
   min: number;
@@ -209,9 +216,7 @@ export function buildThreatReport(
     agentId,
     targetProtocol: protocol,
     action: ACTION_ENUM[assessment.recommendedAction] ?? 3,
-    severity: primaryThreat
-      ? mapSeverityFromPattern(primaryThreat.category)
-      : mapSeverity(assessment.overallRiskScore),
+    severity: mapSeverity(assessment.overallRiskScore),
     confidenceScore: Math.floor(assessment.overallRiskScore * 10000),
     evidenceHash: JSON.stringify(allCitations),
     timestamp: ts,

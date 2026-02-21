@@ -1,0 +1,17 @@
+{
+  "schedule": "*/30 * * * * *",
+  "chainSelector": "5009297550715157269",
+  "agentId": "0x434f4f5244494e41544f5200000000000000000000000000000000000000000003",
+  "sentinelContractAddress": "0x0000000000000000000000000000000000000001",
+  "crossChainRelayAddress": "0x0000000000000000000000000000000000000004",
+  "deploymentRegistryUrl": "https://api.raizo.io/deployments",
+  "monitoredChainSelectors": ["5009297550715157269", "15971525489660198786"],
+  "monitoredChainIds": [1, 8453],
+  "maxRetries": 3,
+  "timeoutMs": 60000,
+  "enablePerformanceMonitoring": true,
+  "gasLimit": 100000,
+  "priorityFee": "2",
+  "messageDeduplicationWindow": 300,
+  "enableRateLimiting": true
+}

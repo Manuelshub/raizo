@@ -30,11 +30,21 @@ export function resolveTargetChains(
   event: ThreatEvent,
   scope: PropagationScope,
   monitoredChains: number[],
+  deployment?: ProtocolDeployment,
 ): number[] {
   switch (scope) {
     case "ALL_CHAINS":
+      // CRITICAL: broadcast to every monitored chain except the source
+      return monitoredChains.filter((c) => c !== event.sourceChain);
     case "SAME_PROTOCOL":
+      // Only propagate to chains where this protocol is actually deployed
+      if (deployment) {
+        return deployment.chains.filter((c) => c !== event.sourceChain);
+      }
+      // Fallback if deployment info is unavailable
+      return monitoredChains.filter((c) => c !== event.sourceChain);
     case "RELATED_ALERT":
+      // Alert related protocols on all monitored chains except source
       return monitoredChains.filter((c) => c !== event.sourceChain);
     case "LOCAL_ONLY":
     default:
@@ -46,8 +56,9 @@ export function buildPropagationMessages(
   event: ThreatEvent,
   scope: PropagationScope,
   monitoredChains: number[],
+  deployment?: ProtocolDeployment,
 ): PropagationMessage[] {
-  const targetChains = resolveTargetChains(event, scope, monitoredChains);
+  const targetChains = resolveTargetChains(event, scope, monitoredChains, deployment);
 
   return targetChains.map((destChain) => ({
     destChain,
@@ -64,7 +75,7 @@ export function runCoordinatorPipeline(
   monitoredChains: number[],
 ): PropagationMessage[] {
   const scope = evaluateScope(event, deployment);
-  return buildPropagationMessages(event, scope, monitoredChains);
+  return buildPropagationMessages(event, scope, monitoredChains, deployment);
 }
 
 export function parseThreatReportedEvent(eventData: any): ThreatEvent {
