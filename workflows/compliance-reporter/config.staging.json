@@ -1,0 +1,7 @@
+{
+  "schedule": "0 0 * * * *",
+  "complianceVaultAddress": "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9",
+  "rpcUrl": "https://ethereum-sepolia-rpc.publicnode.com",
+  "chainId": 1,
+  "agentId": "0x1111111111111111111111111111111111111111111111111111111111111111"
+}
