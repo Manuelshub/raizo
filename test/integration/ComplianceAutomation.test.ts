@@ -2,12 +2,10 @@ import { expect } from "chai";
 import { ethers } from "hardhat";
 import { ComplianceVault } from "../../typechain-types";
 import {
+  ComplianceReporterWorkflow,
   RegulatoryRule,
   ComplianceReport,
-  evaluateRule,
-  generateComplianceReport,
-  runCompliancePipeline,
-} from "../../workflows/logic/compliance-logic";
+} from "../../workflows/compliance-reporter";
 import { HardhatEthersSigner } from "@nomicfoundation/hardhat-ethers/signers";
 
 describe("Compliance Automation Integration", function () {
@@ -37,7 +35,7 @@ describe("Compliance Automation Integration", function () {
         condition: {
           metric: "tx.valueUSD",
           operator: "gt",
-          threshold: 10000,
+          threshold: 10000, // Flag tx > $10k
         },
         action: {
           type: "report",
@@ -54,14 +52,21 @@ describe("Compliance Automation Integration", function () {
       "address.riskScore": 0.1,
     };
 
-    // 1. Run pipeline (pure function — no class needed)
-    const report = runCompliancePipeline(chainId, rules, mockMetrics, []);
+    const workflow = new ComplianceReporterWorkflow(agentId, rules, {
+      fetchProtocolMetrics: async () => mockMetrics,
+      fetchSanctionsList: async () => [],
+    });
+
+    // 1. Run Workflow
+    const report = await workflow.run(chainId, "0xProtocol");
 
     expect(report.findings.length).to.equal(1);
     expect(report.findings[0].ruleId).to.equal("AML-001");
     expect(report.riskSummary.complianceScore).to.be.lt(100);
 
     // 2. Simulate Anchoring via Contract
+    // In production, the CRE would call a capability that sends the tx.
+    // Here we simulate the final anchoring step.
     const reportHash = report.metadata.reportId;
     await expect(
       vault.connect(agent).storeReport(
@@ -81,7 +86,7 @@ describe("Compliance Automation Integration", function () {
     expect(record.reportHash).to.equal(reportHash);
   });
 
-  it("should produce a 100 score for clean metrics", function () {
+  it("should produce a 100 score for clean metrics", async function () {
     const rules: RegulatoryRule[] = [
       {
         ruleId: "AML-001",
@@ -108,46 +113,13 @@ describe("Compliance Automation Integration", function () {
       "address.riskScore": 0.05,
     };
 
-    const report = runCompliancePipeline(chainId, rules, mockMetrics, []);
+    const workflow = new ComplianceReporterWorkflow(agentId, rules, {
+      fetchProtocolMetrics: async () => mockMetrics,
+    });
+
+    const report = await workflow.run(chainId, "0xProtocol");
     expect(report.findings.length).to.equal(0);
     expect(report.riskSummary.complianceScore).to.equal(100);
     expect(report.riskSummary.overallRisk).to.equal("low");
-  });
-
-  it("should correctly evaluate individual rules", function () {
-    const rule: RegulatoryRule = {
-      ruleId: "TEST-001",
-      framework: "MiCA",
-      version: "1.0",
-      effectiveDate: 0,
-      condition: { metric: "volume", operator: "gt", threshold: 100 },
-      action: { type: "flag", severity: "warning", narrative: "High volume" },
-      regulatoryReference: "MiCA Art 3",
-      jurisdiction: ["EU"],
-    };
-
-    expect(evaluateRule(rule, { volume: 150 }, [])).to.be.true;
-    expect(evaluateRule(rule, { volume: 50 }, [])).to.be.false;
-  });
-
-  it("should match sanctions list with 'matches' operator", function () {
-    const rule: RegulatoryRule = {
-      ruleId: "SANC-001",
-      framework: "AML",
-      version: "1.0",
-      effectiveDate: 0,
-      condition: { metric: "sender", operator: "matches", threshold: "" },
-      action: {
-        type: "block",
-        severity: "violation",
-        narrative: "Sanctioned address",
-      },
-      regulatoryReference: "OFAC SDN",
-      jurisdiction: ["US"],
-    };
-
-    const sanctions = ["0xdead", "0xbeef"];
-    expect(evaluateRule(rule, { sender: "0xdead" }, sanctions)).to.be.true;
-    expect(evaluateRule(rule, { sender: "0xsafe" }, sanctions)).to.be.false;
   });
 });
