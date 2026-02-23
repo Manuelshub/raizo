@@ -9,6 +9,7 @@ docs
 .windsurf
 .openzeppelin
 .cre_build_tmp.js
+deployments/
 # Logs
 logs
 *.log

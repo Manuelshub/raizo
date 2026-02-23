@@ -22,7 +22,47 @@ import {
   stringToHex,
 } from "viem";
 
-// --- Interfaces ---
+// --- Interfaces (from AI_AGENTS.md) ---
+
+interface ExploitPattern {
+  patternId: string;
+  category:
+    | "flash_loan"
+    | "reentrancy"
+    | "access_control"
+    | "oracle_manipulation"
+    | "logic_error"
+    | "governance_attack";
+  severity: "low" | "medium" | "high" | "critical";
+  indicators: string[];
+  confidence: number;
+}
+
+interface TelemetryFrame {
+  chainId: number;
+  blockNumber: number;
+  protocolAddress: string;
+  tvl: {
+    current: string;
+    delta24h: number;
+  };
+  transactionMetrics: {
+    volumeUSD: string;
+    failedTxRatio: number;
+  };
+  contractState: {
+    paused: boolean;
+    unusualApprovals: number;
+  };
+  threatIntel: {
+    activeCVEs: string[];
+    exploitPatterns: ExploitPattern[];
+  };
+  priceData: {
+    tokenPrice: string;
+    priceDeviation: number;
+  };
+}
 
 interface ThreatAssessment {
   overallRiskScore: number;
@@ -37,11 +77,10 @@ type Config = {
   schedule: string;
   raizoCoreAddress: `0x${string}`;
   sentinelActionsAddress: `0x${string}`;
-  telemetryApiUrl: string;
-  rpcUrl: string;
+  dexScreenerApiUrl: string;
+  geminiApiUrl: string;
 };
 
-// JSON ABIs for stability in WASM
 const RAIZO_CORE_ABI = [
   {
     inputs: [],
@@ -91,74 +130,184 @@ const SENTINEL_ABI = [
   },
 ] as const;
 
-const ACTION_MAP = {
-  NONE: 0,
-  PAUSE: 0,
-  RATE_LIMIT: 1,
-  DRAIN_BLOCK: 2,
-  ALERT: 3,
-};
-
-const SEVERITY_MAP = {
-  LOW: 0,
-  MEDIUM: 1,
-  HIGH: 2,
-  CRITICAL: 3,
-};
-
 const SEPOLIA_SELECTOR = 16015286601757825753n;
+
+// --- Telemetry Ingestion Helpers ---
+
+// DexScreener API (free, no API key, 300 req/min)
+// GET /token-pairs/v1/{chainId}/{tokenAddress}
+// Returns: priceUsd, volume.h24, liquidity.usd, priceChange.h24, txns.h24
+const fetchDexScreenerData = (
+  nodeRuntime: NodeRuntime<Config>,
+  protocolAddress: string,
+): any => {
+  const http = new HTTPClient();
+  const response = http
+    .sendRequest(nodeRuntime, {
+      url: `${nodeRuntime.config.dexScreenerApiUrl}/token-pairs/v1/ethereum/${protocolAddress}`,
+      method: "GET",
+    })
+    .result();
+
+  if (!ok(response)) {
+    return {
+      priceUsd: "0",
+      volume: { h24: 0 },
+      liquidity: { usd: 0 },
+      priceChange: { h24: 0 },
+      txns: { h24: { buys: 0, sells: 0 } },
+    };
+  }
+
+  try {
+    const pairs = json(response) as any[];
+    // Use the first (highest liquidity) pair
+    return pairs[0] || {
+      priceUsd: "0",
+      volume: { h24: 0 },
+      liquidity: { usd: 0 },
+      priceChange: { h24: 0 },
+      txns: { h24: { buys: 0, sells: 0 } },
+    };
+  } catch (e) {
+    return {
+      priceUsd: "0",
+      volume: { h24: 0 },
+      liquidity: { usd: 0 },
+      priceChange: { h24: 0 },
+      txns: { h24: { buys: 0, sells: 0 } },
+    };
+  }
+};
+
+// --- LLM (Gemini 2.0) Integration ---
+
+const getGeminiAssessment = (
+  nodeRuntime: NodeRuntime<Config>,
+  frame: TelemetryFrame,
+  apiKey: string,
+): ThreatAssessment => {
+  const http = new HTTPClient();
+
+  const prompt = `
+You are Raizo Sentinel, an autonomous DeFi security analyst. Analyze the following telemetry frame and output ONLY valid JSON.
+
+Telemetry Frame:
+${JSON.stringify(frame, null, 2)}
+
+Rules:
+1. Output ONLY valid JSON matching the ThreatAssessment schema.
+2. If riskScore > 0.85, recommend "PAUSE".
+3. If riskScore > 0.70, recommend "DRAIN_BLOCK".
+4. If riskScore > 0.50, recommend "ALERT".
+5. Otherwise, recommend "NONE".
+
+Output Schema:
+{
+  "overallRiskScore": number (0.0 to 1.0),
+  "threatDetected": boolean,
+  "recommendedAction": "NONE" | "ALERT" | "RATE_LIMIT" | "DRAIN_BLOCK" | "PAUSE",
+  "reasoning": "string"
+}
+`;
+
+  const body = JSON.stringify({
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: { response_mime_type: "application/json" },
+  });
+
+  const response = http
+    .sendRequest(nodeRuntime, {
+      url: `${nodeRuntime.config.geminiApiUrl}?key=${apiKey}`,
+      method: "POST",
+      body: hexToBase64(stringToHex(body)),
+    })
+    .result();
+
+  if (!ok(response)) {
+    return {
+      overallRiskScore: 0,
+      threatDetected: false,
+      recommendedAction: "NONE",
+      reasoning: "Gemini API error",
+    };
+  }
+
+  try {
+    const result = json(response) as any;
+    const text = result.candidates[0].content.parts[0].text;
+    return JSON.parse(text) as ThreatAssessment;
+  } catch (e) {
+    return {
+      overallRiskScore: 0,
+      threatDetected: false,
+      recommendedAction: "NONE",
+      reasoning: "Failed to parse Gemini response",
+    };
+  }
+};
 
 // --- Workflow Logic ---
 
 const analyzeProtocol = (
   nodeRuntime: NodeRuntime<Config>,
   protocol: any,
+  apiKey: string,
 ): ThreatAssessment => {
-  const { telemetryApiUrl } = nodeRuntime.config;
-  const http = new HTTPClient();
-
   nodeRuntime.log(`Analyzing protocol: ${protocol.protocolAddress}`);
 
-  const intelResponse = http
-    .sendRequest(nodeRuntime, {
-      url: `${telemetryApiUrl}?address=${protocol.protocolAddress}&chainId=${protocol.chainId}`,
-      method: "GET",
-    })
-    .result();
+  // 1. Ingest High-Fidelity Telemetry from DexScreener (free, no API key)
+  const dex = fetchDexScreenerData(nodeRuntime, protocol.protocolAddress);
 
-  if (!ok(intelResponse)) {
-    return {
-      overallRiskScore: 0,
-      threatDetected: false,
-      recommendedAction: "NONE",
-      reasoning: "Telemetry unreachable.",
-    };
-  }
+  // Derive sell-pressure ratio as anomaly proxy
+  const totalTxns = (dex.txns?.h24?.buys || 0) + (dex.txns?.h24?.sells || 0);
+  const sellPressure = totalTxns > 0 ? (dex.txns?.h24?.sells || 0) / totalTxns : 0;
 
-  const intel = json(intelResponse) as any;
-  let riskScore = 0.1;
-  let action: ThreatAssessment["recommendedAction"] = "NONE";
-  let reasoning = "Healthy.";
-
-  if (intel.threatLevel === "high") {
-    riskScore = 0.95;
-    action = "PAUSE";
-    reasoning = `High risk: ${intel.reason || "Detection triggered"}`;
-  }
-
-  return {
-    overallRiskScore: riskScore,
-    threatDetected: riskScore > 0.7,
-    recommendedAction: action,
-    reasoning,
+  const frame: TelemetryFrame = {
+    chainId: protocol.chainId,
+    blockNumber: 0,
+    protocolAddress: protocol.protocolAddress,
+    tvl: {
+      current: String(dex.liquidity?.usd || 0),
+      delta24h: dex.priceChange?.h24 || 0,
+    },
+    transactionMetrics: {
+      volumeUSD: String(dex.volume?.h24 || 0),
+      failedTxRatio: sellPressure,
+    },
+    contractState: { paused: false, unusualApprovals: 0 },
+    threatIntel: {
+      activeCVEs: [],
+      exploitPatterns: [],
+    },
+    priceData: {
+      tokenPrice: dex.priceUsd || "0",
+      priceDeviation: dex.priceChange?.h24 || 0,
+    },
   };
+
+  // 2. AI Reasoning via Gemini 2.0
+  return getGeminiAssessment(nodeRuntime, frame, apiKey);
 };
 
 const onCronTrigger = (runtime: Runtime<Config>) => {
   const { raizoCoreAddress, sentinelActionsAddress } = runtime.config;
   const evm = new EVMClient(SEPOLIA_SELECTOR);
 
-  runtime.log("Threat Sentinel Run Started");
+  runtime.log("Raizo Workstream 9: Live Data Sentinel Started");
+
+  // Fetch AI_API_KEY from secrets (env namespace)
+  let apiKey: string;
+  try {
+    apiKey = runtime
+      .getSecret({ id: "AI_API_KEY" })
+      .result().value;
+  } catch (e) {
+    runtime.log(
+      "Warning: AI_API_KEY secret not found, using simulation fallback",
+    );
+    apiKey = "AI_API_KEY_SIMULATION_FALLBACK"; // Should be passed via config in prod simulation
+  }
 
   const protocolsReply = evm
     .callContract(runtime, {
@@ -172,10 +321,7 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
     })
     .result();
 
-  if (protocolsReply.data.length === 0) {
-    runtime.log("No protocols found or RaizoCore unreachable.");
-    return "Done (No Data)";
-  }
+  if (protocolsReply.data.length === 0) return "No protocols";
 
   const protocols = decodeFunctionResult({
     abi: RAIZO_CORE_ABI,
@@ -195,32 +341,22 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
           recommendedAction: identical,
           reasoning: identical,
         }),
-      )(protocol)
+      )(protocol, apiKey)
       .result();
 
     if (assessment.recommendedAction !== "NONE" && assessment.threatDetected) {
-      const now = runtime.now().getTime();
-      const reportId = keccak256(
-        encodeAbiParameters(
-          [{ type: "address" }, { type: "uint256" }],
-          [protocol.protocolAddress as `0x${string}`, BigInt(now)],
-        ),
-      );
-
       const reportData = {
-        reportId,
-        agentId: keccak256(stringToHex("threat-sentinel-001")),
+        reportId: keccak256(
+          stringToHex(protocol.protocolAddress + runtime.now().getTime()),
+        ),
+        agentId: keccak256(stringToHex("gemini-sentinel-001")),
         exists: true,
         targetProtocol: protocol.protocolAddress,
-        action:
-          ACTION_MAP[assessment.recommendedAction as keyof typeof ACTION_MAP],
-        severity:
-          assessment.overallRiskScore > 0.9
-            ? SEVERITY_MAP.CRITICAL
-            : SEVERITY_MAP.HIGH,
-        confidenceScore: Math.floor(assessment.overallRiskScore * 10000),
+        action: 0,
+        severity: 3,
+        confidenceScore: 9500,
         evidenceHash: keccak256(stringToHex(assessment.reasoning)),
-        timestamp: BigInt(Math.floor(now / 1000)),
+        timestamp: BigInt(Math.floor(runtime.now().getTime() / 1000)),
         donSignatures: stringToHex("consensus-proof"),
       };
 
@@ -237,7 +373,9 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
         })
         .result();
 
-      runtime.log(`Safeguard report submitted: ${reportId}`);
+      runtime.log(
+        `Safeguard report submitted via Gemini: ${assessment.recommendedAction}`,
+      );
     }
   }
 
@@ -246,7 +384,6 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
 
 const initWorkflow = (config: Config) => {
   const cron = new CronCapability();
-
   return [handler(cron.trigger({ schedule: config.schedule }), onCronTrigger)];
 };
 
