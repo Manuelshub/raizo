@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.23;
 
 /**
  * @title ISentinelActions
@@ -50,14 +50,18 @@ interface ISentinelActions {
 
     // ─── Actions ───
     function executeAction(ThreatReport calldata report) external;
+
     function executeEmergencyPause(address protocol) external;
+
     function liftAction(bytes32 reportId) external;
 
     // ─── State ───
     function getActiveActions(
         address protocol
     ) external view returns (ThreatReport[] memory);
+
     function isProtocolPaused(address protocol) external view returns (bool);
+
     function getActionCount(bytes32 agentId) external view returns (uint256);
 
     // ─── Events ───

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.23;
 
 import {ICrossChainRelay} from "./interfaces/ICrossChainRelay.sol";
 import {ISentinelActions} from "../core/interfaces/ISentinelActions.sol";
@@ -61,7 +61,7 @@ contract CrossChainRelay is
         __AccessControl_init();
         __UUPSUpgradeable_init();
 
-        _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
 
         router = IRouterClient(_router);
         sentinel = ISentinelActions(_sentinel);

@@ -47,8 +47,9 @@ describe("RaizoCore (Upgradeable)", function () {
     });
 
     it("should fail if initialized twice", async function () {
-      await expect(raizo.initialize()).to.be.revertedWith(
-        "Initializable: contract is already initialized",
+      await expect(raizo.initialize()).to.be.revertedWithCustomError(
+        raizo,
+        "InvalidInitialization",
       );
     });
   });
@@ -109,7 +110,12 @@ describe("RaizoCore (Upgradeable)", function () {
         raizo
           .connect(governance)
           .registerAgent(AGENT_ID, addr1.address, BUDGET_USDC),
-      ).to.be.revertedWith(/AccessControl: account .* is missing role/);
+      )
+        .to.be.revertedWithCustomError(
+          raizo,
+          "AccessControlUnauthorizedAccount",
+        )
+        .withArgs(governance.address, DEFAULT_ADMIN_ROLE);
     });
   });
 

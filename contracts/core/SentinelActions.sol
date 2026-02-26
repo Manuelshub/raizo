@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.23;
 
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
-import "../../contracts/core/interfaces/IRaizoCore.sol";
-import "../../contracts/core/interfaces/ISentinelActions.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "./interfaces/IRaizoCore.sol";
+import "./interfaces/ISentinelActions.sol";
 import {ICrossChainRelay} from "../bridge/interfaces/ICrossChainRelay.sol";
 
 /**
@@ -66,7 +66,7 @@ contract SentinelActions is
         __ReentrancyGuard_init();
         __UUPSUpgradeable_init();
 
-        _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         raizoCore = IRaizoCore(_raizoCore);
     }
 

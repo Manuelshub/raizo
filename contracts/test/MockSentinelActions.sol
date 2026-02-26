@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.23;
 
 import {ISentinelActions} from "../core/interfaces/ISentinelActions.sol";
 
@@ -13,6 +13,7 @@ contract MockSentinelActions is ISentinelActions {
     }
 
     function executeEmergencyPause(address protocol) external {}
+
     function liftAction(bytes32 reportId) external {}
 
     function getActiveActions(

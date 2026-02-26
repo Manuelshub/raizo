@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.23;
 
 /**
  * @title IRaizoCore
@@ -58,11 +58,15 @@ interface IRaizoCore {
         uint16 chainId,
         uint8 riskTier
     ) external;
+
     function deregisterProtocol(address protocol) external;
+
     function updateRiskTier(address protocol, uint8 newTier) external;
+
     function getProtocol(
         address protocol
     ) external view returns (ProtocolConfig memory);
+
     function getAllProtocols() external view returns (ProtocolConfig[] memory);
 
     // ─── Agent Management ───
@@ -71,14 +75,19 @@ interface IRaizoCore {
         address paymentWallet,
         uint256 dailyBudget
     ) external;
+
     function deregisterAgent(bytes32 agentId) external;
+
     function getAgent(
         bytes32 agentId
     ) external view returns (AgentConfig memory);
 
     // ─── Configuration ───
     function setConfidenceThreshold(uint16 threshold) external; // basis points (e.g., 8500 = 85%)
+
     function setEpochDuration(uint256 duration) external;
+
     function getConfidenceThreshold() external view returns (uint16);
+
     function getEpochDuration() external view returns (uint256);
 }

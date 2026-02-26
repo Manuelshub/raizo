@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.23;
 
 /**
  * @title IPaymentEscrow
@@ -88,5 +88,6 @@ interface IPaymentEscrow {
     function getWallet(
         bytes32 agentId
     ) external view returns (AgentWallet memory);
+
     function getDailyRemaining(bytes32 agentId) external view returns (uint256);
 }

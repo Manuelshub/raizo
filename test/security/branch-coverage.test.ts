@@ -196,9 +196,12 @@ describe("RaizoCore Branch Coverage", function () {
 
     it("non-admin cannot deregister (L184 modifier revert)", async function () {
       await raizo.registerAgent(AGENT_ID, addr1.address, BUDGET_USDC);
-      await expect(
-        raizo.connect(addr1).deregisterAgent(AGENT_ID),
-      ).to.be.revertedWith(/AccessControl: account .* is missing role/);
+      await expect(raizo.connect(addr1).deregisterAgent(AGENT_ID))
+        .to.be.revertedWithCustomError(
+          raizo,
+          "AccessControlUnauthorizedAccount",
+        )
+        .withArgs(addr1.address, DEFAULT_ADMIN_ROLE);
     });
   });
 
@@ -212,9 +215,12 @@ describe("RaizoCore Branch Coverage", function () {
     });
 
     it("non-governance reverts (L204 modifier revert)", async function () {
-      await expect(
-        raizo.connect(addr1).setConfidenceThreshold(9000),
-      ).to.be.revertedWith(/AccessControl: account .* is missing role/);
+      await expect(raizo.connect(addr1).setConfidenceThreshold(9000))
+        .to.be.revertedWithCustomError(
+          raizo,
+          "AccessControlUnauthorizedAccount",
+        )
+        .withArgs(addr1.address, GOVERNANCE_ROLE);
     });
 
     it("threshold=0 is valid (boundary)", async function () {
@@ -231,15 +237,19 @@ describe("RaizoCore Branch Coverage", function () {
   // --- setEpochDuration guards (L215) ---
   describe("setEpochDuration branches", function () {
     it("duration=0 reverts (L215 true branch)", async function () {
-      await expect(
-        raizo.setEpochDuration(0),
-      ).to.be.revertedWithCustomError(raizo, "InvalidEpochDuration");
+      await expect(raizo.setEpochDuration(0)).to.be.revertedWithCustomError(
+        raizo,
+        "InvalidEpochDuration",
+      );
     });
 
     it("non-admin reverts (L215 modifier revert)", async function () {
-      await expect(
-        raizo.connect(addr1).setEpochDuration(3600),
-      ).to.be.revertedWith(/AccessControl: account .* is missing role/);
+      await expect(raizo.connect(addr1).setEpochDuration(3600))
+        .to.be.revertedWithCustomError(
+          raizo,
+          "AccessControlUnauthorizedAccount",
+        )
+        .withArgs(addr1.address, DEFAULT_ADMIN_ROLE);
     });
   });
 });
@@ -304,8 +314,26 @@ describe("SentinelActions Branch Coverage", function () {
       ...overrides,
     };
     const messageHash = ethers.solidityPackedKeccak256(
-      ["bytes32", "bytes32", "bool", "address", "uint8", "uint8", "uint16", "uint256"],
-      [report.reportId, report.agentId, report.exists, report.targetProtocol, report.action, report.severity, report.confidenceScore, report.timestamp],
+      [
+        "bytes32",
+        "bytes32",
+        "bool",
+        "address",
+        "uint8",
+        "uint8",
+        "uint16",
+        "uint256",
+      ],
+      [
+        report.reportId,
+        report.agentId,
+        report.exists,
+        report.targetProtocol,
+        report.action,
+        report.severity,
+        report.confidenceScore,
+        report.timestamp,
+      ],
     );
     const sig1 = await node1.signMessage(ethers.getBytes(messageHash));
     const sig2 = await node2.signMessage(ethers.getBytes(messageHash));
@@ -321,18 +349,24 @@ describe("SentinelActions Branch Coverage", function () {
     });
 
     it("non-admin cannot set relay (L77 modifier revert)", async function () {
-      await expect(
-        sentinel.connect(addr1).setRelay(addr1.address),
-      ).to.be.revertedWith(/AccessControl: account .* is missing role/);
+      await expect(sentinel.connect(addr1).setRelay(addr1.address))
+        .to.be.revertedWithCustomError(
+          sentinel,
+          "AccessControlUnauthorizedAccount",
+        )
+        .withArgs(addr1.address, DEFAULT_ADMIN_ROLE);
     });
   });
 
   // --- executeEmergencyPause non-EMERGENCY caller (L184) ---
   describe("executeEmergencyPause ACL", function () {
     it("non-EMERGENCY_ROLE reverts (L184 false branch)", async function () {
-      await expect(
-        sentinel.connect(addr1).executeEmergencyPause(PROTOCOL_A),
-      ).to.be.revertedWith(/AccessControl: account .* is missing role/);
+      await expect(sentinel.connect(addr1).executeEmergencyPause(PROTOCOL_A))
+        .to.be.revertedWithCustomError(
+          sentinel,
+          "AccessControlUnauthorizedAccount",
+        )
+        .withArgs(addr1.address, EMERGENCY_ROLE);
     });
   });
 
@@ -340,9 +374,10 @@ describe("SentinelActions Branch Coverage", function () {
   describe("liftAction branches", function () {
     it("reverts for non-existent report (L205 true branch)", async function () {
       const fakeId = ethers.id("non-existent");
-      await expect(
-        sentinel.liftAction(fakeId),
-      ).to.be.revertedWithCustomError(sentinel, "ReportNotFound");
+      await expect(sentinel.liftAction(fakeId)).to.be.revertedWithCustomError(
+        sentinel,
+        "ReportNotFound",
+      );
     });
 
     it("reverts for already-lifted (inactive) report (L206 true branch)", async function () {
@@ -382,7 +417,7 @@ describe("SentinelActions Branch Coverage", function () {
     it("reverts on second initialize call (L64 true branch)", async function () {
       await expect(
         sentinel.initialize(await raizoCore.getAddress()),
-      ).to.be.revertedWith("Initializable: contract is already initialized");
+      ).to.be.revertedWithCustomError(sentinel, "InvalidInitialization");
     });
   });
 });
@@ -419,7 +454,9 @@ describe("PaymentEscrow Branch Coverage", function () {
 
     await raizoCore.registerAgent(AGENT_ID, agentWallet.address, DAILY_LIMIT);
 
-    const PaymentEscrowFactory = await ethers.getContractFactory("PaymentEscrow");
+    const PaymentEscrowFactory = await ethers.getContractFactory(
+      "PaymentEscrow",
+    );
     escrow = (await upgrades.deployProxy(
       PaymentEscrowFactory,
       [await raizoCore.getAddress(), await usdc.getAddress()],
@@ -427,7 +464,9 @@ describe("PaymentEscrow Branch Coverage", function () {
     )) as unknown as PaymentEscrow;
 
     await usdc.mint(provider.address, DEPOSIT_AMOUNT);
-    await usdc.connect(provider).approve(await escrow.getAddress(), DEPOSIT_AMOUNT);
+    await usdc
+      .connect(provider)
+      .approve(await escrow.getAddress(), DEPOSIT_AMOUNT);
   });
 
   async function signPayment(
@@ -464,8 +503,11 @@ describe("PaymentEscrow Branch Coverage", function () {
   describe("double initialize", function () {
     it("reverts on second initialize call (L56 true branch)", async function () {
       await expect(
-        escrow.initialize(await raizoCore.getAddress(), await usdc.getAddress()),
-      ).to.be.revertedWith("Initializable: contract is already initialized");
+        escrow.initialize(
+          await raizoCore.getAddress(),
+          await usdc.getAddress(),
+        ),
+      ).to.be.revertedWithCustomError(escrow, "InvalidInitialization");
     });
   });
 
@@ -494,8 +536,23 @@ describe("PaymentEscrow Branch Coverage", function () {
     it("returns reduced amount after spending (L199 false branch)", async function () {
       const amount = ethers.parseUnits("30", 6);
       const nonce = ethers.id("n-dr-1");
-      const sig = await signPayment(AGENT_ID, recipient.address, amount, 0, 2000000000, nonce);
-      await escrow.authorizePayment(AGENT_ID, recipient.address, amount, 0, 2000000000, nonce, sig);
+      const sig = await signPayment(
+        AGENT_ID,
+        recipient.address,
+        amount,
+        0,
+        2000000000,
+        nonce,
+      );
+      await escrow.authorizePayment(
+        AGENT_ID,
+        recipient.address,
+        amount,
+        0,
+        2000000000,
+        nonce,
+        sig,
+      );
 
       const remaining = await escrow.getDailyRemaining(AGENT_ID);
       expect(remaining).to.equal(DAILY_LIMIT - amount);
@@ -503,8 +560,23 @@ describe("PaymentEscrow Branch Coverage", function () {
 
     it("returns 0 when full budget is spent (L203 true branch)", async function () {
       const nonce = ethers.id("n-dr-2");
-      const sig = await signPayment(AGENT_ID, recipient.address, DAILY_LIMIT, 0, 2000000000, nonce);
-      await escrow.authorizePayment(AGENT_ID, recipient.address, DAILY_LIMIT, 0, 2000000000, nonce, sig);
+      const sig = await signPayment(
+        AGENT_ID,
+        recipient.address,
+        DAILY_LIMIT,
+        0,
+        2000000000,
+        nonce,
+      );
+      await escrow.authorizePayment(
+        AGENT_ID,
+        recipient.address,
+        DAILY_LIMIT,
+        0,
+        2000000000,
+        nonce,
+        sig,
+      );
 
       const remaining = await escrow.getDailyRemaining(AGENT_ID);
       expect(remaining).to.equal(0);
@@ -512,8 +584,23 @@ describe("PaymentEscrow Branch Coverage", function () {
 
     it("resets to full budget after 24h (L199 period reset path)", async function () {
       const nonce = ethers.id("n-dr-3");
-      const sig = await signPayment(AGENT_ID, recipient.address, DAILY_LIMIT, 0, 2000000000, nonce);
-      await escrow.authorizePayment(AGENT_ID, recipient.address, DAILY_LIMIT, 0, 2000000000, nonce, sig);
+      const sig = await signPayment(
+        AGENT_ID,
+        recipient.address,
+        DAILY_LIMIT,
+        0,
+        2000000000,
+        nonce,
+      );
+      await escrow.authorizePayment(
+        AGENT_ID,
+        recipient.address,
+        DAILY_LIMIT,
+        0,
+        2000000000,
+        nonce,
+        sig,
+      );
 
       // Advance 24h+1s
       await ethers.provider.send("evm_increaseTime", [86401]);
@@ -536,10 +623,23 @@ describe("PaymentEscrow Branch Coverage", function () {
       const nonce = ethers.id("n-timing-1");
       const amount = ethers.parseUnits("10", 6);
       const sig = await signPayment(
-        AGENT_ID, recipient.address, amount, futureAfter, futureAfter + 3600, nonce,
+        AGENT_ID,
+        recipient.address,
+        amount,
+        futureAfter,
+        futureAfter + 3600,
+        nonce,
       );
       await expect(
-        escrow.authorizePayment(AGENT_ID, recipient.address, amount, futureAfter, futureAfter + 3600, nonce, sig),
+        escrow.authorizePayment(
+          AGENT_ID,
+          recipient.address,
+          amount,
+          futureAfter,
+          futureAfter + 3600,
+          nonce,
+          sig,
+        ),
       ).to.be.revertedWithCustomError(escrow, "SignatureExpired");
     });
   });
@@ -558,8 +658,16 @@ describe("GovernanceGate Branch Coverage", function () {
 
   const DESCRIPTION_HASH = ethers.id("Test Proposal");
   const ROOT = 12345;
-  const PROOF: [bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint] =
-    [0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n];
+  const PROOF: [
+    bigint,
+    bigint,
+    bigint,
+    bigint,
+    bigint,
+    bigint,
+    bigint,
+    bigint,
+  ] = [0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n];
 
   beforeEach(async function () {
     [owner, proposer, voter, voter2] = await ethers.getSigners();
@@ -580,7 +688,7 @@ describe("GovernanceGate Branch Coverage", function () {
     it("reverts on second initialize call (L36 true branch)", async function () {
       await expect(
         govGate.initialize(await worldId.getAddress()),
-      ).to.be.revertedWith("Initializable: contract is already initialized");
+      ).to.be.revertedWithCustomError(govGate, "InvalidInitialization");
     });
   });
 
@@ -588,7 +696,9 @@ describe("GovernanceGate Branch Coverage", function () {
   describe("vote on executed proposal", function () {
     it("reverts when voting on an already-executed proposal (L116 true branch)", async function () {
       // Create and pass a proposal
-      await govGate.connect(proposer).propose(DESCRIPTION_HASH, ROOT, 1001, PROOF);
+      await govGate
+        .connect(proposer)
+        .propose(DESCRIPTION_HASH, ROOT, 1001, PROOF);
       await govGate.connect(voter).vote(0, true, ROOT, 2001, PROOF);
 
       // Mine blocks to end voting period
@@ -607,7 +717,9 @@ describe("GovernanceGate Branch Coverage", function () {
   // --- execute while still active (L149) ---
   describe("execute timing branches", function () {
     it("reverts when executing while proposal is still active (L149 true branch)", async function () {
-      await govGate.connect(proposer).propose(DESCRIPTION_HASH, ROOT, 4001, PROOF);
+      await govGate
+        .connect(proposer)
+        .propose(DESCRIPTION_HASH, ROOT, 4001, PROOF);
       await govGate.connect(voter).vote(0, true, ROOT, 5001, PROOF);
 
       // Do NOT mine blocks — proposal is still active
@@ -618,7 +730,9 @@ describe("GovernanceGate Branch Coverage", function () {
     });
 
     it("reverts when executing an already-executed proposal (L150 true branch)", async function () {
-      await govGate.connect(proposer).propose(DESCRIPTION_HASH, ROOT, 6001, PROOF);
+      await govGate
+        .connect(proposer)
+        .propose(DESCRIPTION_HASH, ROOT, 6001, PROOF);
       await govGate.connect(voter).vote(0, true, ROOT, 7001, PROOF);
 
       for (let i = 0; i < 7201; i++) await ethers.provider.send("evm_mine", []);
@@ -654,14 +768,19 @@ describe("CrossChainRelay Branch Coverage", function () {
   beforeEach(async function () {
     [owner, admin, other] = await ethers.getSigners();
 
-    const MockSentinelFactory = await ethers.getContractFactory("MockSentinelActions");
+    const MockSentinelFactory = await ethers.getContractFactory(
+      "MockSentinelActions",
+    );
     sentinel = await MockSentinelFactory.deploy();
 
     const MockRouterFactory = await ethers.getContractFactory("MockCCIPRouter");
     router = await MockRouterFactory.deploy();
 
     const RaizoCoreFactory = await ethers.getContractFactory("RaizoCore");
-    raizoCore = (await upgrades.deployProxy(RaizoCoreFactory, [])) as unknown as RaizoCore;
+    raizoCore = (await upgrades.deployProxy(
+      RaizoCoreFactory,
+      [],
+    )) as unknown as RaizoCore;
 
     const RelayFactory = await ethers.getContractFactory("CrossChainRelay");
     relay = (await upgrades.deployProxy(RelayFactory, [
@@ -682,15 +801,19 @@ describe("CrossChainRelay Branch Coverage", function () {
           await sentinel.getAddress(),
           await raizoCore.getAddress(),
         ),
-      ).to.be.revertedWith("Initializable: contract is already initialized");
+      ).to.be.revertedWithCustomError(relay, "InvalidInitialization");
     });
   });
 
   // --- ccipReceive with invalid message type (L158) ---
   describe("ccipReceive invalid message type", function () {
     it("reverts on non-ACTION_EXECUTE message type (L158 true branch)", async function () {
-      await relay.connect(admin).whitelistSourceChain(SOURCE_CHAIN_SELECTOR, true);
-      await relay.connect(admin).whitelistSourceSender(SOURCE_CHAIN_SELECTOR, other.address, true);
+      await relay
+        .connect(admin)
+        .whitelistSourceChain(SOURCE_CHAIN_SELECTOR, true);
+      await relay
+        .connect(admin)
+        .whitelistSourceSender(SOURCE_CHAIN_SELECTOR, other.address, true);
 
       // The enum MessageType { ALERT_PROPAGATE=0, ACTION_EXECUTE=1, CONFIG_SYNC=2, ... }
       // Use 0 (ALERT_PROPAGATE) which is a valid enum value but not ACTION_EXECUTE
@@ -710,14 +833,19 @@ describe("CrossChainRelay Branch Coverage", function () {
       ];
 
       const payload = ethers.AbiCoder.defaultAbiCoder().encode(
-        ["(uint8,bytes32,bytes32,uint64,uint64,address,uint8,uint8,uint16,uint256,bytes,bytes)"],
+        [
+          "(uint8,bytes32,bytes32,uint64,uint64,address,uint8,uint8,uint16,uint256,bytes,bytes)",
+        ],
         [msgDataTuple],
       );
 
       const msg = {
         messageId: ethers.id("ccip.msg.invalid"),
         sourceChainSelector: SOURCE_CHAIN_SELECTOR,
-        sender: ethers.AbiCoder.defaultAbiCoder().encode(["address"], [other.address]),
+        sender: ethers.AbiCoder.defaultAbiCoder().encode(
+          ["address"],
+          [other.address],
+        ),
         data: payload,
         destTokenAmounts: [],
       };
@@ -732,7 +860,9 @@ describe("CrossChainRelay Branch Coverage", function () {
   describe("whitelistSourceSender ACL", function () {
     it("non-admin cannot whitelist sender (L225 true branch)", async function () {
       await expect(
-        relay.connect(other).whitelistSourceSender(SOURCE_CHAIN_SELECTOR, other.address, true),
+        relay
+          .connect(other)
+          .whitelistSourceSender(SOURCE_CHAIN_SELECTOR, other.address, true),
       ).to.be.revertedWithCustomError(relay, "AccessDenied");
     });
   });

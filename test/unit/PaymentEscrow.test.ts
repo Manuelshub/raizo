@@ -70,10 +70,9 @@ describe("PaymentEscrow (TDD Red Phase)", function () {
 
     it("should fail deposit for unregistered agent", async function () {
       const badId = ethers.id("bad-agent");
-      await expect(escrow.deposit(badId, 100)).to.be.revertedWithCustomError(
-        raizoCore,
-        "AgentNotRegistered",
-      );
+      await expect(escrow.deposit(badId, 100))
+        .to.be.revertedWithCustomError(escrow, "AgentNotRegistered")
+        .withArgs(badId);
     });
   });
 
