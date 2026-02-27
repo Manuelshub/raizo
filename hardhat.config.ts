@@ -1,9 +1,16 @@
+import * as dotenv from "dotenv";
+dotenv.config();
+
+// Tenderly plugin reads these variables directly from process.env at import time.
+// We disable them during tests to avoid destructive contract wrapping and fatal FetchErrors (update checks).
+if (process.argv.includes("test")) {
+  process.env.TENDERLY_AUTOMATIC_VERIFICATION = "false";
+  process.env.TENDERLY_ENABLE_OUTDATED_VERSION_CHECK = "false";
+}
+
 import "@openzeppelin/hardhat-upgrades";
 import "@nomicfoundation/hardhat-toolbox";
-// import "@tenderly/hardhat-tenderly";
-import * as dotenv from "dotenv";
-
-dotenv.config();
+import "@tenderly/hardhat-tenderly";
 
 import { HardhatUserConfig } from "hardhat/types/config";
 
@@ -11,7 +18,7 @@ const { TENDERLY_PRIVATE_VERIFICATION, TENDERLY_AUTOMATIC_VERIFICATION } =
   process.env;
 
 const privateVerification = TENDERLY_PRIVATE_VERIFICATION === "true";
-const automaticVerifications = false; // Disabled to prevent test interference
+const automaticVerifications = TENDERLY_AUTOMATIC_VERIFICATION === "true";
 
 console.log("Using private verification?", privateVerification);
 console.log("Using automatic verification?", automaticVerifications);
@@ -32,12 +39,12 @@ const config: HardhatUserConfig = {
     },
   },
   networks: {
-    my_tenderly_testnet: {
-      // or any other custom network name
+    virtualSepolia: {
       url: `${process.env.TENDERLY_TESTNET_RPC_URL ?? ""}`,
+      accounts: [process.env.DEPLOYER_PRIVATE_KEY ?? ""],
     },
     sepolia: {
-      url: `${process.env.SEPOLIA_URL ?? ""}`,
+      url: `${process.env.SEPOLIA_RPC_URL ?? ""}`,
       accounts: [process.env.SEPOLIA_PRIVATE_KEY ?? ""],
     },
   },
@@ -45,6 +52,7 @@ const config: HardhatUserConfig = {
     project: process.env.TENDERLY_PROJECT ?? "",
     username: process.env.TENDERLY_USERNAME ?? "",
     privateVerification,
+    automaticVerifications,
   },
 };
 

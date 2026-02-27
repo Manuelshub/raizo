@@ -33,7 +33,7 @@ const TESTNET_ADDRESSES: Record<string, { worldId: string; usdc: string; ccipRou
     usdc: "0x0000000000000000000000000000000000000000",
     ccipRouter: "0x0000000000000000000000000000000000000000",
   },
-  tenderly: {
+  virtualSepolia: {
     worldId: "0x0000000000000000000000000000000000000000",
     usdc: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
     ccipRouter: "0x0BF3dE8c5D3e8A2B34D2BEeB17ABfCeBaf363A59",
