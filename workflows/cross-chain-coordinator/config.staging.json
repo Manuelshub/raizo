@@ -1,0 +1,9 @@
+{
+  "schedule": "*/12 * * * * *",
+  "sentinelActionsAddress": "0x8066E7D0e9C8DCA4Dde50a40606040778A515BaE",
+  "crossChainRelayAddress": "0x0000000000000000000000000000000000000000",
+  "raizoCoreAddress": "0x34E671a59Bc52DAb30053E47Aa90c40Aaa124A4e",
+  "operatorAddress": "0xF89227c33F8Ef6f623ad9303e72cf8dc17f7643F",
+  "chainName": "ethereum-testnet-sepolia",
+  "targetChainSelectors": []
+}

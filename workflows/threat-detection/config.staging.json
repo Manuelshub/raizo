@@ -3,9 +3,6 @@
   "raizoCoreAddress": "0x34E671a59Bc52DAb30053E47Aa90c40Aaa124A4e",
   "sentinelActionsAddress": "0x8066E7D0e9C8DCA4Dde50a40606040778A515BaE",
   "operatorAddress": "0xF89227c33F8Ef6f623ad9303e72cf8dc17f7643F",
-  "dexScreenerApiUrl": "https://api.dexscreener.com",
   "geminiApiUrl": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent",
-  "rpcUrl": "https://ethereum-sepolia-rpc.publicnode.com",
-  "chainSelector": "16015286601757825753",
   "chainName": "ethereum-testnet-sepolia"
 }

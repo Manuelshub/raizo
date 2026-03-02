@@ -1,8 +1,8 @@
 {
   "schedule": "0 0 * * * *",
   "complianceVaultAddress": "0x9985dCed5B50796E95e4E40148550c13bcA1C299",
+  "raizoCoreAddress": "0x34E671a59Bc52DAb30053E47Aa90c40Aaa124A4e",
   "operatorAddress": "0xF89227c33F8Ef6f623ad9303e72cf8dc17f7643F",
-  "rpcUrl": "https://ethereum-sepolia-rpc.publicnode.com",
   "geminiApiUrl": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent",
   "chainId": 11155,
   "chainName": "ethereum-testnet-sepolia",
