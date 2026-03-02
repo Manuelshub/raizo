@@ -1,35 +1,10 @@
-import * as dotenv from "dotenv";
-dotenv.config();
-
-// Tenderly plugin reads these variables directly from process.env at import time.
-// We disable them during tests to avoid destructive contract wrapping and fatal FetchErrors (update checks).
-if (process.argv.includes("test")) {
-  process.env.TENDERLY_AUTOMATIC_VERIFICATION = "false";
-  process.env.TENDERLY_ENABLE_OUTDATED_VERSION_CHECK = "false";
-}
-
-import "@openzeppelin/hardhat-upgrades";
 import "@nomicfoundation/hardhat-toolbox";
-import "@tenderly/hardhat-tenderly";
-
-import { HardhatUserConfig } from "hardhat/types/config";
-
-const { TENDERLY_PRIVATE_VERIFICATION, TENDERLY_AUTOMATIC_VERIFICATION } =
-  process.env;
-
-const privateVerification = TENDERLY_PRIVATE_VERIFICATION === "true";
-const automaticVerifications = TENDERLY_AUTOMATIC_VERIFICATION === "true";
-
-console.log("Using private verification?", privateVerification);
-console.log("Using automatic verification?", automaticVerifications);
-console.log(
-  "Using automatic population of hardhat-verify `etherscan` configuration? ",
-  process.env.TENDERLY_AUTOMATIC_POPULATE_HARDHAT_VERIFY_CONFIG === "true",
-);
+import "@openzeppelin/hardhat-upgrades";
+import { HardhatUserConfig } from "hardhat/types";
 
 const config: HardhatUserConfig = {
   solidity: {
-    version: "0.8.23",
+    version: "0.8.20",
     settings: {
       optimizer: {
         enabled: true,
@@ -38,23 +13,44 @@ const config: HardhatUserConfig = {
       viaIR: true,
     },
   },
+  paths: {
+    sources: "./contracts",
+    tests: "./test",
+    cache: "./cache",
+    artifacts: "./artifacts",
+  },
   networks: {
-    virtualSepolia: {
-      url: `${process.env.TENDERLY_TESTNET_RPC_URL ?? ""}`,
-      accounts: [process.env.DEPLOYER_PRIVATE_KEY ?? ""],
+    hardhat: {
+      allowUnlimitedContractSize: false,
+    },
+    tenderly: {
+      url: "https://virtual.rpc.tenderly.co/kc-codes/project/private/raizo-vtn/194ea712-4b35-4f79-afcc-d698b1c7aae5",
+      accounts: process.env.DEPLOYER_PRIVATE_KEY
+        ? [process.env.DEPLOYER_PRIVATE_KEY]
+        : [],
     },
     sepolia: {
-      url: `${process.env.SEPOLIA_RPC_URL ?? ""}`,
-      accounts: [process.env.SEPOLIA_PRIVATE_KEY ?? ""],
+      url: process.env.SEPOLIA_RPC_URL || "",
+      accounts: process.env.DEPLOYER_PRIVATE_KEY
+        ? [process.env.DEPLOYER_PRIVATE_KEY]
+        : [],
+      chainId: 11155111,
+    },
+    baseSepolia: {
+      url: process.env.BASE_SEPOLIA_RPC_URL || "",
+      accounts: process.env.DEPLOYER_PRIVATE_KEY
+        ? [process.env.DEPLOYER_PRIVATE_KEY]
+        : [],
+      chainId: 84532,
     },
   },
-  tenderly: {
-    project: process.env.TENDERLY_PROJECT ?? "",
-    username: process.env.TENDERLY_USERNAME ?? "",
-    privateVerification,
-    automaticVerifications,
+  gasReporter: {
+    enabled: process.env.REPORT_GAS === "true",
+    currency: "USD",
+    gasPrice: 20,
+    outputFile: process.env.CI ? "gas-report.txt" : undefined,
+    noColors: !!process.env.CI,
   },
 };
 
-// eslint-disable-next-line import/no-default-export
 export default config;

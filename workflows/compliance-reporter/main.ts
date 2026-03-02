@@ -10,8 +10,11 @@ import {
   identical,
   ok,
   json,
-  bytesToHex,
+  // bytesToHex,
   hexToBase64,
+  getNetwork,
+  LAST_FINALIZED_BLOCK_NUMBER,
+  encodeCallMsg,
 } from "@chainlink/cre-sdk";
 import { keccak256, encodeFunctionData, stringToHex } from "viem";
 
@@ -32,8 +35,10 @@ interface ComplianceReport {
 type Config = {
   schedule: string;
   complianceVaultAddress: `0x${string}`;
+  operatorAddress: `0x${string}`;
   rpcUrl: string;
   chainId: number;
+  chainName: string;
   agentId: `0x${string}`;
   geminiApiUrl: string;
 };
@@ -62,7 +67,7 @@ const FRAMEWORK_MAP: Record<string, number> = {
   CUSTOM: 5,
 };
 
-const SEPOLIA_SELECTOR = 16015286601757825753n;
+// Chain selector will be dynamically resolved from chainName in config
 
 // --- AI Service ---
 
@@ -72,6 +77,9 @@ const runGeminiReportEnhancement = (
   apiKey: string,
 ): Partial<ComplianceReport> => {
   const http = new HTTPClient();
+
+  nodeRuntime.log("[Gemini] Starting AI-enhanced report generation");
+  nodeRuntime.log(`[Gemini] Framework: ${baseReport.framework}, Score: ${baseReport.complianceScore}`);
 
   const prompt = `
 Generate a professional compliance summary and recommendations for a DeFi protocol based on the following automated findings:
@@ -91,23 +99,35 @@ Output ONLY valid JSON:
     generationConfig: { response_mime_type: "application/json" },
   });
 
+  nodeRuntime.log(`[Gemini] Making request to: ${nodeRuntime.config.geminiApiUrl}`);
+
   const response = http
     .sendRequest(nodeRuntime, {
       url: `${nodeRuntime.config.geminiApiUrl}?key=${apiKey}`,
       method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
       body: hexToBase64(stringToHex(body)),
     })
     .result();
 
+  nodeRuntime.log(`[Gemini] Response received, ok: ${ok(response)}`);
+
   if (!ok(response)) {
+    nodeRuntime.log("[Gemini] API request failed, using fallback");
     return { summary: "Summary unavailable.", recommendations: [] };
   }
 
   try {
     const result = json(response) as any;
+    nodeRuntime.log(`[Gemini] Parsed response: ${JSON.stringify(result)}`);
     const text = result.candidates[0].content.parts[0].text;
-    return JSON.parse(text);
+    const parsed = JSON.parse(text);
+    nodeRuntime.log("[Gemini] Successfully generated AI-enhanced report");
+    return parsed;
   } catch (e) {
+    nodeRuntime.log(`[Gemini] Error parsing response: ${e}`);
     return { summary: "Analysis failed.", recommendations: [] };
   }
 };
@@ -143,23 +163,41 @@ const generateReport = (
 };
 
 const onCronTrigger = (runtime: Runtime<Config>) => {
-  const { complianceVaultAddress, chainId, agentId } = runtime.config;
-  const evm = new EVMClient(SEPOLIA_SELECTOR);
+  const { complianceVaultAddress, chainId, agentId, chainName } = runtime.config;
 
-  runtime.log("Raizo Compliance Reporter: Starting AI-Enhanced Generation");
+  runtime.log("=== Raizo Compliance Reporter: Starting AI-Enhanced Generation ===");
+
+  // Convert human-readable chain name to chain selector
+  const network = getNetwork({
+    chainFamily: "evm",
+    chainSelectorName: chainName,
+    isTestnet: true,
+  });
+
+  if (!network) {
+    runtime.log(`ERROR: Unknown chain name: ${chainName}`);
+    throw new Error(`Unknown chain name: ${chainName}`);
+  }
+
+  runtime.log(`Chain resolved: ${chainName} -> selector ${network.chainSelector.selector}`);
+
+  const evm = new EVMClient(network.chainSelector.selector);
 
   // Fetch AI_API_KEY from secrets (env namespace)
   let apiKey: string;
   try {
     apiKey = runtime
-      .getSecret({ id: "AI_API_KEY" })
+      .getSecret({ id: "API_KEY" })
       .result().value;
+    runtime.log("AI_API_KEY secret loaded successfully");
   } catch (e) {
     runtime.log(
       "Warning: AI_API_KEY secret not found, using simulation fallback",
     );
     apiKey = "AI_API_KEY_SIMULATION_FALLBACK";
   }
+
+  runtime.log("Generating compliance report with AI enhancement...");
 
   const report = runtime
     .runInNodeMode(
@@ -176,15 +214,21 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
     )(apiKey)
     .result();
 
+  runtime.log(`Report generated: ${report.reportId}`);
+  runtime.log(`Summary: ${report.summary}`);
+  runtime.log(`Recommendations: ${report.recommendations.length} items`);
+
   const reportData = JSON.stringify(report);
   const reportHash = keccak256(stringToHex(reportData));
   const reportURI = "ipfs://compliance-reports/" + report.reportId;
 
   runtime.log(`Anchoring Gemini-enhanced report: ${report.reportId}`);
+  runtime.log(`Report hash: ${reportHash}`);
 
   evm
     .callContract(runtime, {
-      call: {
+      call: encodeCallMsg({
+        from: runtime.config.operatorAddress,
         to: complianceVaultAddress,
         data: encodeFunctionData({
           abi: VAULT_ABI,
@@ -197,11 +241,12 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
             reportURI,
           ],
         }),
-      },
+      }),
+      blockNumber: LAST_FINALIZED_BLOCK_NUMBER,
     })
     .result();
 
-  runtime.log(`AI-Enhanced Report anchored.`);
+  runtime.log(`✅ AI-Enhanced Report anchored successfully`);
 
   return report.reportId;
 };

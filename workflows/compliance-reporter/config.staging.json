@@ -1,8 +1,10 @@
 {
   "schedule": "0 0 * * * *",
-  "complianceVaultAddress": "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9",
+  "complianceVaultAddress": "0x9985dCed5B50796E95e4E40148550c13bcA1C299",
+  "operatorAddress": "0xF89227c33F8Ef6f623ad9303e72cf8dc17f7643F",
   "rpcUrl": "https://ethereum-sepolia-rpc.publicnode.com",
-  "geminiApiUrl": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
-  "chainId": 1,
+  "geminiApiUrl": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent",
+  "chainId": 11155,
+  "chainName": "ethereum-testnet-sepolia",
   "agentId": "0x1111111111111111111111111111111111111111111111111111111111111111"
 }

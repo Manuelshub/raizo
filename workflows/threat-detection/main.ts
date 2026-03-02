@@ -7,19 +7,22 @@ import {
   type Runtime,
   type NodeRuntime,
   ConsensusAggregationByFields,
+  getNetwork,
+  LAST_FINALIZED_BLOCK_NUMBER,
   median,
   identical,
   json,
   ok,
   bytesToHex,
   hexToBase64,
+  encodeCallMsg,
 } from "@chainlink/cre-sdk";
 import {
   keccak256,
-  encodeAbiParameters,
   encodeFunctionData,
   decodeFunctionResult,
   stringToHex,
+  zeroAddress,
 } from "viem";
 
 // --- Interfaces (from AI_AGENTS.md) ---
@@ -27,12 +30,12 @@ import {
 interface ExploitPattern {
   patternId: string;
   category:
-    | "flash_loan"
-    | "reentrancy"
-    | "access_control"
-    | "oracle_manipulation"
-    | "logic_error"
-    | "governance_attack";
+  | "flash_loan"
+  | "reentrancy"
+  | "access_control"
+  | "oracle_manipulation"
+  | "logic_error"
+  | "governance_attack";
   severity: "low" | "medium" | "high" | "critical";
   indicators: string[];
   confidence: number;
@@ -77,8 +80,10 @@ type Config = {
   schedule: string;
   raizoCoreAddress: `0x${string}`;
   sentinelActionsAddress: `0x${string}`;
+  operatorAddress: `0x${string}`;
   dexScreenerApiUrl: string;
   geminiApiUrl: string;
+  chainName: string;
 };
 
 const RAIZO_CORE_ABI = [
@@ -94,7 +99,7 @@ const RAIZO_CORE_ABI = [
           { name: "isActive", type: "bool" },
           { name: "registeredAt", type: "uint256" },
         ],
-        name: "",
+        name: "protocols",
         type: "tuple[]",
       },
     ],
@@ -130,7 +135,7 @@ const SENTINEL_ABI = [
   },
 ] as const;
 
-const SEPOLIA_SELECTOR = 16015286601757825753n;
+// Chain selector will be dynamically resolved from chainName in config
 
 // --- Telemetry Ingestion Helpers ---
 
@@ -142,14 +147,31 @@ const fetchDexScreenerData = (
   protocolAddress: string,
 ): any => {
   const http = new HTTPClient();
+
+  const url = `${nodeRuntime.config.dexScreenerApiUrl}/token-pairs/v1/ethereum/${protocolAddress}`;
+  nodeRuntime.log(`[DexScreener] Making request to: ${url}`);
+
   const response = http
     .sendRequest(nodeRuntime, {
-      url: `${nodeRuntime.config.dexScreenerApiUrl}/token-pairs/v1/ethereum/${protocolAddress}`,
+      url: url,
       method: "GET",
     })
     .result();
 
+  // Debug: Log response details
+  nodeRuntime.log(`[DexScreener] Response received`);
+  nodeRuntime.log(`[DexScreener] Response ok: ${ok(response)}`);
+  nodeRuntime.log(`[DexScreener] Response type: ${typeof response}`);
+
+  // Try to log response as JSON
+  try {
+    nodeRuntime.log(`[DexScreener] Response object: ${JSON.stringify(response)}`);
+  } catch (e) {
+    nodeRuntime.log(`[DexScreener] Could not stringify response: ${e}`);
+  }
+
   if (!ok(response)) {
+    nodeRuntime.log(`[DexScreener] Response NOT OK - returning fallback data`);
     return {
       priceUsd: "0",
       volume: { h24: 0 },
@@ -161,6 +183,12 @@ const fetchDexScreenerData = (
 
   try {
     const pairs = json(response) as any[];
+    nodeRuntime.log(`[DexScreener] Parsed ${pairs.length} pair(s)`);
+
+    if (pairs.length > 0) {
+      nodeRuntime.log(`[DexScreener] First pair: ${JSON.stringify(pairs[0])}`);
+    }
+
     // Use the first (highest liquidity) pair
     return pairs[0] || {
       priceUsd: "0",
@@ -170,6 +198,7 @@ const fetchDexScreenerData = (
       txns: { h24: { buys: 0, sells: 0 } },
     };
   } catch (e) {
+    nodeRuntime.log(`[DexScreener] Error parsing response: ${e}`);
     return {
       priceUsd: "0",
       volume: { h24: 0 },
@@ -188,7 +217,6 @@ const getGeminiAssessment = (
   apiKey: string,
 ): ThreatAssessment => {
   const http = new HTTPClient();
-
   const prompt = `
 You are Raizo Sentinel, an autonomous DeFi security analyst. Analyze the following telemetry frame and output ONLY valid JSON.
 
@@ -291,8 +319,20 @@ const analyzeProtocol = (
 };
 
 const onCronTrigger = (runtime: Runtime<Config>) => {
-  const { raizoCoreAddress, sentinelActionsAddress } = runtime.config;
-  const evm = new EVMClient(SEPOLIA_SELECTOR);
+  const { raizoCoreAddress, sentinelActionsAddress, chainName } = runtime.config;
+
+  // Convert human-readable chain name to chain selector
+  const network = getNetwork({
+    chainFamily: "evm",
+    chainSelectorName: chainName,
+    isTestnet: true,
+  });
+
+  if (!network) {
+    throw new Error(`Unknown chain name: ${chainName}`);
+  }
+
+  const evmClient = new EVMClient(network.chainSelector.selector);
 
   runtime.log("Raizo Workstream 9: Live Data Sentinel Started");
 
@@ -300,8 +340,9 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
   let apiKey: string;
   try {
     apiKey = runtime
-      .getSecret({ id: "AI_API_KEY" })
+      .getSecret({ id: "API_KEY" })
       .result().value;
+      runtime.log("AI_API_KEY secret loaded successfully");
   } catch (e) {
     runtime.log(
       "Warning: AI_API_KEY secret not found, using simulation fallback",
@@ -309,27 +350,30 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
     apiKey = "AI_API_KEY_SIMULATION_FALLBACK"; // Should be passed via config in prod simulation
   }
 
-  const protocolsReply = evm
+  const protocolsReply = evmClient
     .callContract(runtime, {
-      call: {
+      call: encodeCallMsg({
+        from: zeroAddress,
         to: raizoCoreAddress,
         data: encodeFunctionData({
           abi: RAIZO_CORE_ABI,
           functionName: "getAllProtocols",
         }),
-      },
+      }),
+      blockNumber: LAST_FINALIZED_BLOCK_NUMBER,
     })
     .result();
 
-  if (protocolsReply.data.length === 0) return "No protocols";
-
+  // Decode protocols from blockchain
   const protocols = decodeFunctionResult({
     abi: RAIZO_CORE_ABI,
     functionName: "getAllProtocols",
     data: bytesToHex(protocolsReply.data) as `0x${string}`,
   }) as any[];
 
-  for (const protocol of protocols) {
+  runtime.log(`Successfully fetched ${protocols.length} protocol(s) from blockchain`);
+
+  for (const protocol of protocols.slice(0, 2)) { // Limit to 2 protocols to stay within HTTP rate limit (5 requests)
     if (!protocol.isActive) continue;
 
     const assessment = runtime
@@ -360,16 +404,18 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
         donSignatures: stringToHex("consensus-proof"),
       };
 
-      evm
+      evmClient
         .callContract(runtime, {
-          call: {
+          call: encodeCallMsg({
+            from: runtime.config.operatorAddress,
             to: sentinelActionsAddress,
             data: encodeFunctionData({
               abi: SENTINEL_ABI,
               functionName: "executeAction",
               args: [reportData],
             }),
-          },
+          }),
+          blockNumber: LAST_FINALIZED_BLOCK_NUMBER,
         })
         .result();
 
