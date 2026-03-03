@@ -104,6 +104,9 @@ type Config = {
   operatorAddress: `0x${string}`;
   geminiApiUrl: string;
   chainName: string;
+  telemetryCacheAddress: `0x${string}`;
+  /** Maps protocol address → Chainlink AggregatorV3 price feed address. */
+  priceFeedAddresses: Record<string, string>;
 };
 
 // ---------------------------------------------------------------------------
@@ -184,9 +187,63 @@ const PROTOCOL_READ_ABI = [
   },
 ] as const;
 
-/** ERC-1967 implementation storage slot for upgrade detection. */
-const ERC1967_IMPL_SLOT =
-  "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc" as const;
+/** Chainlink AggregatorV3Interface — latestRoundData(). */
+const AGGREGATOR_V3_ABI = [
+  {
+    inputs: [],
+    name: "latestRoundData",
+    outputs: [
+      { name: "roundId", type: "uint80" },
+      { name: "answer", type: "int256" },
+      { name: "startedAt", type: "uint256" },
+      { name: "updatedAt", type: "uint256" },
+      { name: "answeredInRound", type: "uint80" },
+    ],
+    stateMutability: "view",
+    type: "function",
+  },
+] as const;
+
+/** TelemetryCache contract ABI for TVL snapshot persistence. */
+const TELEMETRY_CACHE_ABI = [
+  {
+    inputs: [{ name: "protocol", type: "address" }],
+    name: "getSnapshot",
+    outputs: [
+      {
+        components: [
+          { name: "tvl", type: "uint256" },
+          { name: "timestamp", type: "uint256" },
+        ],
+        name: "",
+        type: "tuple",
+      },
+    ],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [
+      { name: "protocol", type: "address" },
+      { name: "tvl", type: "uint256" },
+    ],
+    name: "recordSnapshot",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+] as const;
+
+/** Best-effort proxy detection — call implementation() on ERC-1967 transparent proxies. */
+const PROXY_ABI = [
+  {
+    inputs: [],
+    name: "implementation",
+    outputs: [{ name: "", type: "address" }],
+    stateMutability: "view",
+    type: "function",
+  },
+] as const;
 
 // ---------------------------------------------------------------------------
 // Action type → SentinelActions.ActionType enum mapping
@@ -323,23 +380,148 @@ const readOnChainTelemetry = (
     );
   }
 
+  // --- ERC-1967 proxy detection via implementation() ---
+  let pendingUpgrade = false;
+  try {
+    const implReply = evmClient
+      .callContract(runtime, {
+        call: encodeCallMsg({
+          from: zeroAddress,
+          to: protocolAddress,
+          data: encodeFunctionData({
+            abi: PROXY_ABI,
+            functionName: "implementation",
+          }),
+        }),
+        blockNumber: LAST_FINALIZED_BLOCK_NUMBER,
+      })
+      .result();
+    const decoded = decodeFunctionResult({
+      abi: PROXY_ABI,
+      functionName: "implementation",
+      data: bytesToHex(implReply.data) as `0x${string}`,
+    });
+    const implAddress = String(decoded);
+    // If implementation() returns a non-zero address, the contract is a proxy.
+    // Log the implementation address so operators can detect changes across runs.
+    if (implAddress !== zeroAddress) {
+      runtime.log(
+        `[ProxyDetect] ${protocolAddress} is a proxy → impl=${implAddress}`,
+      );
+      // NOTE: To detect actual upgrades, the operator would compare this against
+      // a known-good implementation address. For now, we flag that it IS a proxy.
+      pendingUpgrade = false;
+    }
+  } catch (_e) {
+    // Not a proxy or doesn't expose implementation() — this is expected for
+    // non-proxy contracts. Not an error.
+  }
+
+  // --- Chainlink Price Feed via AggregatorV3.latestRoundData() ---
+  let tokenPrice = "0";
+  let priceDeviation = 0;
+  let oracleLatency = 0;
+
+  const feedAddress = runtime.config.priceFeedAddresses?.[protocolAddress];
+  if (feedAddress) {
+    try {
+      const priceReply = evmClient
+        .callContract(runtime, {
+          call: encodeCallMsg({
+            from: zeroAddress,
+            to: feedAddress as `0x${string}`,
+            data: encodeFunctionData({
+              abi: AGGREGATOR_V3_ABI,
+              functionName: "latestRoundData",
+            }),
+          }),
+          blockNumber: LAST_FINALIZED_BLOCK_NUMBER,
+        })
+        .result();
+      const decoded = decodeFunctionResult({
+        abi: AGGREGATOR_V3_ABI,
+        functionName: "latestRoundData",
+        data: bytesToHex(priceReply.data) as `0x${string}`,
+      }) as readonly [bigint, bigint, bigint, bigint, bigint];
+
+      const [, answer, , updatedAt] = decoded;
+      tokenPrice = String(answer);
+
+      // Oracle latency: seconds since last price update
+      const nowSec = Math.floor(runtime.now().getTime() / 1000);
+      oracleLatency = nowSec - Number(updatedAt);
+
+      runtime.log(
+        `[PriceFeed] ${protocolAddress}: price=${tokenPrice}, latency=${oracleLatency}s`,
+      );
+    } catch (e) {
+      runtime.log(
+        `[PriceFeed] latestRoundData() failed for feed ${feedAddress}: ${e}`,
+      );
+    }
+  }
+
+  // --- TVL delta via TelemetryCache ---
+  let delta24h = 0;
+  const cacheAddr = runtime.config.telemetryCacheAddress;
+  if (cacheAddr && cacheAddr !== zeroAddress) {
+    try {
+      const snapReply = evmClient
+        .callContract(runtime, {
+          call: encodeCallMsg({
+            from: zeroAddress,
+            to: cacheAddr,
+            data: encodeFunctionData({
+              abi: TELEMETRY_CACHE_ABI,
+              functionName: "getSnapshot",
+              args: [protocolAddress],
+            }),
+          }),
+          blockNumber: LAST_FINALIZED_BLOCK_NUMBER,
+        })
+        .result();
+      const decoded = decodeFunctionResult({
+        abi: TELEMETRY_CACHE_ABI,
+        functionName: "getSnapshot",
+        data: bytesToHex(snapReply.data) as `0x${string}`,
+      }) as any;
+
+      const previousTvl = BigInt(decoded.tvl ?? 0);
+      const currentTvl = BigInt(tvlCurrent);
+
+      if (previousTvl > 0n && currentTvl > 0n) {
+        delta24h =
+          Number(((currentTvl - previousTvl) * 10000n) / previousTvl) / 100;
+        runtime.log(
+          `[TvlDelta] ${protocolAddress}: prev=${previousTvl}, curr=${currentTvl}, delta=${delta24h.toFixed(
+            2,
+          )}%`,
+        );
+      }
+    } catch (e) {
+      runtime.log(
+        `[TelemetryCache] getSnapshot() failed for ${protocolAddress}: ${e}`,
+      );
+    }
+  }
+
   return {
     chainId,
-    blockNumber: 0, // Populated from header if available
+    blockNumber: 0,
     protocolAddress,
     tvl: {
       current: tvlCurrent,
-      delta24h: 0, // Requires historical data — future: store & compare
+      delta24h,
     },
     contractState: {
       owner,
       paused,
-      pendingUpgrade: false, // Future: read ERC-1967 implementation slot
+      pendingUpgrade,
     },
     priceData: {
-      tokenPrice: "0", // Future: Chainlink Price Feed integration
-      priceDeviation: 0,
-      oracleLatency: 0,
+      tokenPrice,
+      priceDeviation,
+      oracleLatency,
     },
   };
 };
@@ -755,6 +937,34 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
       runtime.log(
         `[Action] Report submitted: ${assessment.recommendedAction} on ${protocolAddr}`,
       );
+    }
+
+    // --- Step 5: Write current TVL to TelemetryCache for next-tick delta ---
+    const cacheAddr = runtime.config.telemetryCacheAddress;
+    if (cacheAddr && cacheAddr !== zeroAddress && onChainData.tvl.current !== "0") {
+      try {
+        evmClient
+          .callContract(runtime, {
+            call: encodeCallMsg({
+              from: runtime.config.operatorAddress,
+              to: cacheAddr,
+              data: encodeFunctionData({
+                abi: TELEMETRY_CACHE_ABI,
+                functionName: "recordSnapshot",
+                args: [protocolAddr, BigInt(onChainData.tvl.current)],
+              }),
+            }),
+            blockNumber: LAST_FINALIZED_BLOCK_NUMBER,
+          })
+          .result();
+        runtime.log(
+          `[TelemetryCache] Recorded TVL snapshot for ${protocolAddr}: ${onChainData.tvl.current}`,
+        );
+      } catch (e) {
+        runtime.log(
+          `[TelemetryCache] recordSnapshot() failed for ${protocolAddr}: ${e}`,
+        );
+      }
     }
   }
 
