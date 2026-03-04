@@ -35,7 +35,6 @@ contract GovernanceGate is
      */
     function initialize(address _worldId) public initializer {
         __AccessControl_init();
-        __UUPSUpgradeable_init();
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         worldId = IWorldID(_worldId);

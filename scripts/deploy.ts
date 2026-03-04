@@ -12,6 +12,7 @@ import * as path from "path";
  * 4. PaymentEscrow    (UUPS proxy, needs raizoCore + USDC)
  * 5. ComplianceVault  (immutable, constructor grants admin)
  * 6. CrossChainRelay  (UUPS proxy, needs router + sentinel + raizoCore)
+ * 7. TelemetryCache   (immutable, for workflow TVL tracking)
  *
  * Output: deployments/<network>-<timestamp>.json
  */
@@ -93,7 +94,7 @@ async function main() {
   console.log(`      ComplianceVault: ${deployed.ComplianceVault}`);
 
   // --- 6. CrossChainRelay ---
-  console.log("6/6 Deploying CrossChainRelay (UUPS proxy)...");
+  console.log("6/7 Deploying CrossChainRelay (UUPS proxy)...");
   const CrossChainRelay = await ethers.getContractFactory("CrossChainRelay");
   const crossChainRelay = await upgrades.deployProxy(
     CrossChainRelay,
@@ -103,6 +104,14 @@ async function main() {
   await crossChainRelay.waitForDeployment();
   deployed.CrossChainRelay = await crossChainRelay.getAddress();
   console.log(`      CrossChainRelay: ${deployed.CrossChainRelay}`);
+
+  // --- 7. TelemetryCache ---
+  console.log("7/7 Deploying TelemetryCache (immutable)...");
+  const TelemetryCache = await ethers.getContractFactory("TelemetryCache");
+  const telemetryCache = await TelemetryCache.deploy();
+  await telemetryCache.waitForDeployment();
+  deployed.TelemetryCache = await telemetryCache.getAddress();
+  console.log(`      TelemetryCache: ${deployed.TelemetryCache}`);
 
   // --- Write Output ---
   const output = {

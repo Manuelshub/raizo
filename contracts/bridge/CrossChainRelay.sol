@@ -59,7 +59,6 @@ contract CrossChainRelay is
         address _raizoCore
     ) public initializer {
         __AccessControl_init();
-        __UUPSUpgradeable_init();
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
 

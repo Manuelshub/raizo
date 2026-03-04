@@ -1,16 +1,20 @@
 import "@nomicfoundation/hardhat-toolbox";
 import "@openzeppelin/hardhat-upgrades";
 import { HardhatUserConfig } from "hardhat/types";
+import * as dotenv from "dotenv";
+
+dotenv.config();
 
 const config: HardhatUserConfig = {
   solidity: {
-    version: "0.8.28",
+    version: "0.8.27",
     settings: {
       optimizer: {
         enabled: true,
         runs: 200,
       },
       viaIR: true,
+      evmVersion: "cancun",
     },
   },
   paths: {
@@ -30,11 +34,13 @@ const config: HardhatUserConfig = {
         : [],
     },
     sepolia: {
-      url: process.env.SEPOLIA_RPC_URL || "",
+      url: process.env.SEPOLIA_RPC_URL || "https://eth-sepolia.public.blastapi.io",
       accounts: process.env.DEPLOYER_PRIVATE_KEY
         ? [process.env.DEPLOYER_PRIVATE_KEY]
         : [],
       chainId: 11155111,
+      timeout: 120000,
+      gasPrice: "auto",
     },
     baseSepolia: {
       url: process.env.BASE_SEPOLIA_RPC_URL || "",
@@ -50,6 +56,9 @@ const config: HardhatUserConfig = {
     gasPrice: 20,
     outputFile: process.env.CI ? "gas-report.txt" : undefined,
     noColors: !!process.env.CI,
+  },
+  etherscan: {
+    apiKey: process.env.ETHERSCAN_API_KEY || "",
   },
 };
 

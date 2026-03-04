@@ -4,7 +4,7 @@ pragma solidity ^0.8.23;
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "../utils/ReentrancyGuardUpgradeable.sol";
 import "./interfaces/IRaizoCore.sol";
 import "./interfaces/ISentinelActions.sol";
 import {ICrossChainRelay} from "../bridge/interfaces/ICrossChainRelay.sol";
@@ -64,7 +64,6 @@ contract SentinelActions is
     function initialize(address _raizoCore) public initializer {
         __AccessControl_init();
         __ReentrancyGuard_init();
-        __UUPSUpgradeable_init();
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         raizoCore = IRaizoCore(_raizoCore);
