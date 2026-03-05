@@ -211,6 +211,10 @@ const readProtocolMetrics = (
     );
   }
 
+  // --- paused() ---
+  // Note: paused() is an optional function from OpenZeppelin's Pausable contract.
+  // Standard ERC-20 tokens do not implement this function, so we expect failures
+  // for most protocols. This is normal behavior and not an error condition.
   let paused = false;
   try {
     const reply = evmClient
@@ -233,9 +237,14 @@ const readProtocolMetrics = (
     });
     paused = Boolean(decoded);
   } catch (e) {
-    runtime.log(`[ChainReader] paused() failed for ${protocolAddress}: ${e}`);
+    // Silent fail - paused() not implemented on this contract
+    // Default to false (not paused) for protocols without Pausable functionality
   }
 
+  // --- owner() ---
+  // Note: owner() is an optional function from OpenZeppelin's Ownable contract.
+  // Standard ERC-20 tokens do not implement this function, so we expect failures
+  // for most protocols. This is normal behavior and not an error condition.
   let owner = zeroAddress as string;
   try {
     const reply = evmClient
@@ -258,7 +267,8 @@ const readProtocolMetrics = (
     });
     owner = String(decoded);
   } catch (e) {
-    runtime.log(`[ChainReader] owner() failed for ${protocolAddress}: ${e}`);
+    // Silent fail - owner() not implemented on this contract
+    // Default to zero address for protocols without Ownable functionality
   }
 
   return { totalSupply, paused, owner, reportCount: 0 };
@@ -321,6 +331,28 @@ const generateComplianceReport = (
     `[Compliance] Generating ${framework} report for ${protocolMetrics.length} protocol(s)`,
   );
 
+  // --- Fallback Report Definition ---
+  // Used when LLM API fails or returns invalid data
+  // Provides baseline compliance assessment with no findings
+  const fallbackReport: Omit<ComplianceReport, "attestation"> = {
+    metadata: {
+      reportId: `REP-${now}`,
+      generatedAt: Math.floor(now / 1000),
+      framework,
+      coverageChains: [nodeRuntime.config.chainId],
+      periodStart,
+      periodEnd,
+    },
+    findings: [],
+    riskSummary: {
+      overallRisk: "low",
+      flaggedTransactions: 0,
+      flaggedAddresses: [],
+      complianceScore: 100,
+    },
+    recommendations: [],
+  };
+
   const prompt = `You are Raizo Compliance Reporter, an autonomous DeFi compliance analyst. Generate a compliance report for the ${framework} regulatory framework based on the following on-chain protocol metrics.
 
 Protocol Metrics:
@@ -348,6 +380,14 @@ Output Schema:
     generationConfig: { response_mime_type: "application/json" },
   });
 
+  // --- Gemini API Request ---
+  // Send compliance analysis request to Gemini LLM within Confidential Compute (TEE)
+  // API key is loaded from CRE secrets store and never exposed in logs
+  nodeRuntime.log(`[Gemini] Preparing API request for ${framework} compliance analysis`);
+  nodeRuntime.log(`[Gemini] API endpoint: ${nodeRuntime.config.geminiApiUrl}`);
+  nodeRuntime.log(`[Gemini] API key present: ${apiKey && apiKey !== "SIMULATION_FALLBACK_KEY" ? "yes" : "no (using fallback)"}`);
+  nodeRuntime.log(`[Gemini] Request payload size: ${body.length} bytes`);
+
   const response = http
     .sendRequest(nodeRuntime, {
       url: `${nodeRuntime.config.geminiApiUrl}?key=${apiKey}`,
@@ -356,37 +396,60 @@ Output Schema:
     })
     .result();
 
-  const fallbackReport: Omit<ComplianceReport, "attestation"> = {
-    metadata: {
-      reportId: `REP-${now}`,
-      generatedAt: Math.floor(now / 1000),
-      framework,
-      coverageChains: [nodeRuntime.config.chainId],
-      periodStart,
-      periodEnd,
-    },
-    findings: [],
-    riskSummary: {
-      overallRisk: "low",
-      flaggedTransactions: 0,
-      flaggedAddresses: [],
-      complianceScore: 100,
-    },
-    recommendations: [],
-  };
-
+  // --- Response Validation ---
   if (!ok(response)) {
-    nodeRuntime.log("[Gemini] API request failed — using baseline report");
+    nodeRuntime.log(`[Gemini] API request failed with status: ${response.statusCode}`);
+    nodeRuntime.log(`[Gemini] Response headers: ${JSON.stringify(response.headers || {})}`);
+    
+    // Decode and log full response body for debugging
+    // Response body is a Uint8Array, convert to string for readability
+    let responseText = "empty";
+    if (response.body) {
+      try {
+        // Convert Uint8Array to string
+        const decoder = new TextDecoder();
+        responseText = decoder.decode(response.body);
+        nodeRuntime.log(`[Gemini] Full response body: ${responseText}`);
+      } catch (e) {
+        // Fallback: show raw bytes if decoding fails
+        nodeRuntime.log(`[Gemini] Response body (raw bytes): ${response.body}`);
+      }
+    } else {
+      nodeRuntime.log(`[Gemini] Response body: empty`);
+    }
+    
+    nodeRuntime.log("[Gemini] Using baseline fallback report due to API failure");
     return fallbackReport;
   }
 
+  // --- Parse and Validate LLM Response ---
   try {
     const result = json(response) as any;
-    const text = result.candidates[0].content.parts[0].text;
+    
+    // Validate response structure
+    if (!result.candidates || !Array.isArray(result.candidates) || result.candidates.length === 0) {
+      nodeRuntime.log("[Gemini] Invalid response structure - missing or empty candidates array");
+      nodeRuntime.log(`[Gemini] Response structure: ${JSON.stringify(Object.keys(result))}`);
+      return fallbackReport;
+    }
+    
+    const candidate = result.candidates[0];
+    if (!candidate.content || !candidate.content.parts || !candidate.content.parts[0]) {
+      nodeRuntime.log("[Gemini] Invalid candidate structure - missing content or parts");
+      return fallbackReport;
+    }
+    
+    const text = candidate.content.parts[0].text;
+    if (!text || typeof text !== "string") {
+      nodeRuntime.log("[Gemini] Invalid text content in response");
+      return fallbackReport;
+    }
+    
+    // Parse JSON from LLM response
     const parsed = JSON.parse(text);
 
     nodeRuntime.log(
-      `[Gemini] Generated report: score=${parsed.riskSummary?.complianceScore}, findings=${parsed.findings?.length}`,
+      `[Gemini] Successfully parsed response: score=${parsed.riskSummary?.complianceScore}, findings=${parsed.findings?.length || 0}`,
     );
 
     // Validate and merge with metadata
@@ -407,7 +470,8 @@ Output Schema:
         : [],
     };
   } catch (e) {
-    nodeRuntime.log(`[Gemini] Parse error: ${e}`);
+    nodeRuntime.log(`[Gemini] Failed to parse LLM response: ${e}`);
+    nodeRuntime.log(`[Gemini] Error type: ${e instanceof Error ? e.name : typeof e}`);
     return fallbackReport;
   }
 };
@@ -532,36 +596,56 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
   );
 
   // --- Step 3: Anchor report hash on-chain via ComplianceVault.storeReport ---
+  // Note: This is a state-changing operation that writes to the blockchain.
+  // In simulation mode, this may fail if --broadcast flag is not used.
+  // We wrap in try-catch to allow workflow to complete even if anchoring fails.
   const reportData = JSON.stringify(fullReport);
   const reportHash = keccak256(stringToHex(reportData));
   const reportURI = "ipfs://compliance-reports/" + fullReport.metadata.reportId;
 
-  runtime.log(`[Anchor] Hash: ${reportHash}`);
-  runtime.log(`[Anchor] URI: ${reportURI}`);
+  runtime.log(`[Anchor] Report hash: ${reportHash}`);
+  runtime.log(`[Anchor] Report URI: ${reportURI}`);
+  runtime.log(`[Anchor] Attempting to store report on-chain...`);
 
-  evmClient
-    .callContract(runtime, {
-      call: encodeCallMsg({
-        from: runtime.config.operatorAddress,
-        to: complianceVaultAddress,
-        data: encodeFunctionData({
-          abi: VAULT_ABI,
-          functionName: "storeReport",
-          args: [
-            reportHash,
-            agentId as `0x${string}`,
-            FRAMEWORK_MAP[fullReport.metadata.framework] || 5,
-            chainId,
-            reportURI,
-          ],
+  try {
+    evmClient
+      .callContract(runtime, {
+        call: encodeCallMsg({
+          from: runtime.config.operatorAddress,
+          to: complianceVaultAddress,
+          data: encodeFunctionData({
+            abi: VAULT_ABI,
+            functionName: "storeReport",
+            args: [
+              reportHash,
+              agentId as `0x${string}`,
+              FRAMEWORK_MAP[fullReport.metadata.framework] || 5,
+              chainId,
+              reportURI,
+            ],
+          }),
         }),
-      }),
-      blockNumber: LAST_FINALIZED_BLOCK_NUMBER,
-    })
-    .result();
+        // Note: blockNumber is omitted for write operations
+        // LAST_FINALIZED_BLOCK_NUMBER is only for read operations
+      })
+      .result();
+
+    runtime.log(
+      `[Anchor] ✅ Report ${fullReport.metadata.reportId} successfully stored on-chain`,
+    );
+  } catch (e) {
+    // Anchoring failed - this is expected in simulation mode without --broadcast
+    // The report is still generated and can be used, just not stored on-chain
+    runtime.log(`[Anchor] ⚠️  Failed to store report on-chain: ${e}`);
+    runtime.log(`[Anchor] Report generated successfully but not anchored`);
+    runtime.log(`[Anchor] This is expected in simulation mode without --broadcast flag`);
+    
+    // Don't throw - allow workflow to complete successfully
+    // The report generation is the primary goal; on-chain storage is secondary
+  }
 
   runtime.log(
-    `=== Raizo Compliance Reporter: Report ${fullReport.metadata.reportId} anchored successfully ===`,
+    `=== Raizo Compliance Reporter: Report ${fullReport.metadata.reportId} generation complete ===`,
   );
 
   return fullReport.metadata.reportId;

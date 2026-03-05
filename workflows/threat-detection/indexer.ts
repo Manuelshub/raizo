@@ -76,6 +76,9 @@ export function fetchTransactionMetrics(
 
   try {
     // Get latest block number
+    nodeRuntime.log(`[Indexer] [API] Requesting latest block number from ${rpcUrl}`);
+    nodeRuntime.log(`[Indexer] [API] Method: eth_blockNumber`);
+    
     const latestBlockResp = http
       .sendRequest(nodeRuntime, {
         url: rpcUrl,
@@ -89,12 +92,16 @@ export function fetchTransactionMetrics(
       })
       .result();
 
+    nodeRuntime.log(`[Indexer] [API] Response status: ${latestBlockResp.statusCode}`);
+    
     if (!ok(latestBlockResp)) {
       nodeRuntime.log(
-        `[Indexer] Failed to fetch latest block: ${latestBlockResp.statusCode}`,
+        `[Indexer] [API] Failed to fetch latest block: ${latestBlockResp.statusCode}`,
       );
       return getEmptyMetrics();
     }
+    
+    nodeRuntime.log(`[Indexer] [API] Successfully fetched latest block number`);
 
     const latestBlockData = json(latestBlockResp) as any;
     const latestBlock = parseInt(latestBlockData.result, 16);
@@ -105,6 +112,10 @@ export function fetchTransactionMetrics(
     );
 
     // Fetch logs for the protocol (all events)
+    nodeRuntime.log(`[Indexer] [API] Requesting logs from ${rpcUrl}`);
+    nodeRuntime.log(`[Indexer] [API] Method: eth_getLogs`);
+    nodeRuntime.log(`[Indexer] [API] Params: address=${protocolAddress}, fromBlock=${fromBlock}, toBlock=${latestBlock}`);
+    
     const logsResp = http
       .sendRequest(nodeRuntime, {
         url: rpcUrl,
@@ -124,12 +135,16 @@ export function fetchTransactionMetrics(
       })
       .result();
 
+    nodeRuntime.log(`[Indexer] [API] Response status: ${logsResp.statusCode}`);
+    
     if (!ok(logsResp)) {
       nodeRuntime.log(
-        `[Indexer] Failed to fetch logs: ${logsResp.statusCode}`,
+        `[Indexer] [API] Failed to fetch logs: ${logsResp.statusCode}`,
       );
       return getEmptyMetrics();
     }
+    
+    nodeRuntime.log(`[Indexer] [API] Successfully fetched logs`);
 
     const logsData = json(logsResp) as any;
     const logs = logsData.result || [];
@@ -152,6 +167,8 @@ export function fetchTransactionMetrics(
       const txHash = txHashes[i];
 
       try {
+        nodeRuntime.log(`[Indexer] [API] Fetching transaction ${i + 1}/${sampleSize}: ${txHash}`);
+        
         const txResp = http
           .sendRequest(nodeRuntime, {
             url: rpcUrl,
@@ -165,6 +182,8 @@ export function fetchTransactionMetrics(
           })
           .result();
 
+        nodeRuntime.log(`[Indexer] [API] Transaction response status: ${txResp.statusCode}`);
+        
         if (!ok(txResp)) continue;
 
         const txData = json(txResp) as any;
@@ -188,6 +207,8 @@ export function fetchTransactionMetrics(
         }
 
         // Check transaction receipt for failure
+        nodeRuntime.log(`[Indexer] [API] Fetching receipt for tx ${i + 1}/${sampleSize}: ${txHash}`);
+        
         const receiptResp = http
           .sendRequest(nodeRuntime, {
             url: rpcUrl,
@@ -201,6 +222,8 @@ export function fetchTransactionMetrics(
           })
           .result();
 
+        nodeRuntime.log(`[Indexer] [API] Receipt response status: ${receiptResp.statusCode}`);
+        
         if (ok(receiptResp)) {
           const receiptData = json(receiptResp) as any;
           const receipt = receiptData.result;
@@ -255,6 +278,10 @@ export function fetchMempoolSignals(
   try {
     // Fetch pending transactions
     // Note: Most public RPCs don't support txpool_content, so we use eth_getBlockByNumber with "pending"
+    nodeRuntime.log(`[Indexer] [API] Requesting pending block from ${rpcUrl}`);
+    nodeRuntime.log(`[Indexer] [API] Method: eth_getBlockByNumber`);
+    nodeRuntime.log(`[Indexer] [API] Params: ["pending", true]`);
+    
     const pendingResp = http
       .sendRequest(nodeRuntime, {
         url: rpcUrl,
@@ -267,13 +294,17 @@ export function fetchMempoolSignals(
         }))),
       })
       .result();
+    
+    nodeRuntime.log(`[Indexer] [API] Response status: ${pendingResp.statusCode}`);
 
     if (!ok(pendingResp)) {
       nodeRuntime.log(
-        `[Indexer] Failed to fetch pending block: ${pendingResp.statusCode}`,
+        `[Indexer] [API] Failed to fetch pending block: ${pendingResp.statusCode}`,
       );
       return getEmptyMempoolSignals();
     }
+    
+    nodeRuntime.log(`[Indexer] [API] Successfully fetched pending block`);
 
     const pendingData = json(pendingResp) as any;
     const pendingBlock = pendingData.result;

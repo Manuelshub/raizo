@@ -75,7 +75,7 @@ export function fetchActiveCVEs(
 
   try {
     nodeRuntime.log(
-      `[ThreatIntel] Fetching CVEs for ${protocolAddress}`,
+      `[ThreatIntel] [API] Fetching CVEs for ${protocolAddress}`,
     );
 
     // Search for recent DeFi-related CVEs
@@ -85,19 +85,40 @@ export function fetchActiveCVEs(
       resultsPerPage: "10",
     });
 
+    const apiUrl = `${NVD_API_BASE}?${searchParams.toString()}`;
+    nodeRuntime.log(`[ThreatIntel] [API] Request URL: ${apiUrl}`);
+    nodeRuntime.log(`[ThreatIntel] [API] Method: GET`);
+    nodeRuntime.log(`[ThreatIntel] [API] Keywords: solidity OR smart contract OR defi`);
+    
     const response = http
       .sendRequest(nodeRuntime, {
-        url: `${NVD_API_BASE}?${searchParams.toString()}`,
+        url: apiUrl,
         method: "GET",
       })
       .result();
 
+    nodeRuntime.log(`[ThreatIntel] [API] Response status: ${response.statusCode}`);
+    
     if (!ok(response)) {
       nodeRuntime.log(
-        `[ThreatIntel] NVD API request failed: ${response.statusCode}`,
+        `[ThreatIntel] [API] NVD API request failed: ${response.statusCode}`,
       );
+      
+      // Log response body for debugging
+      if (response.body) {
+        try {
+          const decoder = new TextDecoder();
+          const responseText = decoder.decode(response.body);
+          nodeRuntime.log(`[ThreatIntel] [API] Response body: ${responseText.slice(0, 500)}`);
+        } catch (e) {
+          nodeRuntime.log(`[ThreatIntel] [API] Could not decode response body`);
+        }
+      }
+      
       return [];
     }
+    
+    nodeRuntime.log(`[ThreatIntel] [API] Successfully fetched CVE data`);
 
     const data = json(response) as any;
     const vulnerabilities = data.vulnerabilities || [];

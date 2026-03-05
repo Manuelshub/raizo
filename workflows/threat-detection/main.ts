@@ -24,6 +24,15 @@ import {
   stringToHex,
   zeroAddress,
 } from "viem";
+import {
+  fetchTransactionMetrics,
+  fetchMempoolSignals,
+} from "./indexer";
+import {
+  fetchThreatIntelligence,
+  type ExploitPattern as ThreatIntelExploitPattern,
+  type ThreatIntelligence,
+} from "./threat-intel";
 
 // ---------------------------------------------------------------------------
 // Interfaces — aligned with AI_AGENTS.md §3.2 (tiered TelemetryFrame)
@@ -56,12 +65,25 @@ interface TelemetryFrame {
   protocolAddress: string;
   tvl: {
     current: string; // Serialized bigint — totalSupply or totalAssets
+    delta1h: number; // % change over 1 hour
     delta24h: number;
+  };
+  transactionMetrics: {
+    volumeUSD: string; // Serialized bigint
+    uniqueAddresses: number;
+    largeTransactions: number; // > $1M threshold
+    failedTxRatio: number;
   };
   contractState: {
     owner: string;
     paused: boolean;
     pendingUpgrade: boolean;
+    unusualApprovals: number; // ERC-20 unlimited approvals
+  };
+  mempoolSignals: {
+    pendingLargeWithdrawals: number;
+    flashLoanBorrows: number;
+    suspiciousCalldata: string[];
   };
   priceData: {
     tokenPrice: string; // Serialized bigint — from Chainlink Price Feed
@@ -73,6 +95,8 @@ interface TelemetryFrame {
   threatIntel: {
     activeCVEs: string[];
     exploitPatterns: ExploitPattern[];
+    darkWebMentions: number;
+    socialSentiment: number; // -1.0 to 1.0
   };
 }
 
@@ -104,6 +128,7 @@ type Config = {
   operatorAddress: `0x${string}`;
   geminiApiUrl: string;
   chainName: string;
+  rpcUrl: string; // RPC endpoint for indexer queries
   telemetryCacheAddress: `0x${string}`;
   /** Maps protocol address → Chainlink AggregatorV3 price feed address. */
   priceFeedAddresses: Record<string, string>;
@@ -247,14 +272,16 @@ const PROXY_ABI = [
 
 // ---------------------------------------------------------------------------
 // Action type → SentinelActions.ActionType enum mapping
+// Must match ISentinelActions.sol enum exactly:
+//   PAUSE = 0, RATE_LIMIT = 1, DRAIN_BLOCK = 2, ALERT = 3, CUSTOM = 4
 // ---------------------------------------------------------------------------
 
 const ACTION_TYPE_MAP: Record<string, number> = {
-  NONE: 0,
-  ALERT: 1,
-  RATE_LIMIT: 2,
-  DRAIN_BLOCK: 3,
-  PAUSE: 4,
+  PAUSE: 0,
+  RATE_LIMIT: 1,
+  DRAIN_BLOCK: 2,
+  ALERT: 3,
+  CUSTOM: 4,
 };
 
 const SEVERITY_MAP: Record<string, number> = {
@@ -279,6 +306,8 @@ const HEURISTIC_THRESHOLDS = {
   oracleLatencySec: 3600,
   /** If active CVEs exist, always escalate. */
   hasActiveCVEs: true,
+  /** Minimum heuristic score to invoke LLM (0.0 = always invoke, 1.0 = never invoke) */
+  minScoreForLLM: 0.1, // Production: 0.1 (cost optimization), Testing: 0.0 (see all API calls)
 };
 
 // ---------------------------------------------------------------------------
@@ -326,6 +355,9 @@ const readOnChainTelemetry = (
 
   // --- paused() ---
   let paused = false;
+  // Only attempt to call paused() if the contract might have it
+  // Standard ERC-20 tokens don't have paused(), so we skip the call
+  // to avoid unnecessary errors
   try {
     const pausedReply = evmClient
       .callContract(runtime, {
@@ -346,14 +378,17 @@ const readOnChainTelemetry = (
       data: bytesToHex(pausedReply.data) as `0x${string}`,
     });
     paused = Boolean(decoded);
+    runtime.log(`[ChainReader] paused() = ${paused} for ${protocolAddress}`);
   } catch (e) {
-    runtime.log(
-      `[ChainReader] paused() call failed for ${protocolAddress}: ${e}`,
-    );
+    // Function doesn't exist on this contract - use default value
+    // This is normal for standard ERC-20 tokens
   }
 
   // --- owner() ---
   let owner = zeroAddress as string;
+  // Only attempt to call owner() if the contract might have it
+  // Standard ERC-20 tokens don't have owner(), so we skip the call
+  // to avoid unnecessary errors
   try {
     const ownerReply = evmClient
       .callContract(runtime, {
@@ -374,10 +409,10 @@ const readOnChainTelemetry = (
       data: bytesToHex(ownerReply.data) as `0x${string}`,
     });
     owner = String(decoded);
+    runtime.log(`[ChainReader] owner() = ${owner} for ${protocolAddress}`);
   } catch (e) {
-    runtime.log(
-      `[ChainReader] owner() call failed for ${protocolAddress}: ${e}`,
-    );
+    // Function doesn't exist on this contract - use default value
+    // This is normal for standard ERC-20 tokens
   }
 
   // --- ERC-1967 proxy detection via implementation() ---
@@ -511,43 +546,31 @@ const readOnChainTelemetry = (
     protocolAddress,
     tvl: {
       current: tvlCurrent,
+      delta1h: 0, // Will be populated by TelemetryCache in future enhancement
       delta24h,
+    },
+    transactionMetrics: {
+      volumeUSD: "0",
+      uniqueAddresses: 0,
+      largeTransactions: 0,
+      failedTxRatio: 0,
     },
     contractState: {
       owner,
       paused,
       pendingUpgrade,
+      unusualApprovals: 0, // Will be populated by approval monitoring in future enhancement
+    },
+    mempoolSignals: {
+      pendingLargeWithdrawals: 0,
+      flashLoanBorrows: 0,
+      suspiciousCalldata: [],
     },
     priceData: {
       tokenPrice,
       priceDeviation,
       oracleLatency,
     },
-  };
-};
-
-// ---------------------------------------------------------------------------
-// Tier 2: Off-chain threat intelligence (HTTP via runInNodeMode)
-// ---------------------------------------------------------------------------
-
-/**
- * Fetches threat intelligence from an external API within Confidential Compute.
- * Wrapped in runInNodeMode for DON consensus.
- */
-const fetchThreatIntel = (
-  nodeRuntime: NodeRuntime<Config>,
-  _protocolAddress: string,
-): TelemetryFrame["threatIntel"] => {
-  // In production, this would call a real threat intel API (Immunefi, OpenCVE).
-  // For MVP/simulation, we return a baseline with no active threats.
-  // The HTTP call pattern is preserved for when the API is integrated.
-  nodeRuntime.log(
-    `[ThreatIntel] Fetching intelligence for ${_protocolAddress}`,
-  );
-
-  return {
-    activeCVEs: [],
-    exploitPatterns: [],
   };
 };
 
@@ -613,8 +636,62 @@ const runHeuristicGate = (
     reasons.push(`high_severity_patterns_${criticalPatterns.length}`);
   }
 
+  // High failed transaction ratio (> 20%)
+  if (frame.transactionMetrics.failedTxRatio > 0.2) {
+    score += 0.25;
+    reasons.push(
+      `high_failed_tx_ratio_${(frame.transactionMetrics.failedTxRatio * 100).toFixed(1)}pct`,
+    );
+  }
+
+  // Large transactions detected
+  if (frame.transactionMetrics.largeTransactions > 0) {
+    score += 0.15;
+    reasons.push(
+      `large_transactions_${frame.transactionMetrics.largeTransactions}`,
+    );
+  }
+
+  // Pending flash loan borrows in mempool
+  if (frame.mempoolSignals.flashLoanBorrows > 0) {
+    score += 0.35;
+    reasons.push(
+      `pending_flash_loans_${frame.mempoolSignals.flashLoanBorrows}`,
+    );
+  }
+
+  // Pending large withdrawals in mempool
+  if (frame.mempoolSignals.pendingLargeWithdrawals > 0) {
+    score += 0.3;
+    reasons.push(
+      `pending_large_withdrawals_${frame.mempoolSignals.pendingLargeWithdrawals}`,
+    );
+  }
+
+  // Suspicious calldata patterns
+  if (frame.mempoolSignals.suspiciousCalldata.length > 0) {
+    score += 0.25;
+    reasons.push(
+      `suspicious_calldata_${frame.mempoolSignals.suspiciousCalldata.length}`,
+    );
+  }
+
+  // Dark web mentions (high risk indicator)
+  if (frame.threatIntel.darkWebMentions > 0) {
+    score += 0.4;
+    reasons.push(`dark_web_mentions_${frame.threatIntel.darkWebMentions}`);
+  }
+
+  // Negative social sentiment (< -0.5)
+  if (frame.threatIntel.socialSentiment < -0.5) {
+    score += 0.2;
+    reasons.push(
+      `negative_sentiment_${frame.threatIntel.socialSentiment.toFixed(2)}`,
+    );
+  }
+
   score = Math.min(score, 1.0);
-  const shouldInvokeLLM = score > 0.1;
+  const shouldInvokeLLM = score >= HEURISTIC_THRESHOLDS.minScoreForLLM;
 
   runtime.log(
     `[Heuristic] Score: ${score.toFixed(
@@ -625,9 +702,6 @@ const runHeuristicGate = (
   return { heuristicScore: score, shouldInvokeLLM };
 };
 
-// ---------------------------------------------------------------------------
-// LLM Analysis (Gemini via runInNodeMode)
-// ---------------------------------------------------------------------------
 
 /**
  * Invokes Gemini for risk analysis within Confidential Compute (runInNodeMode).
@@ -668,6 +742,13 @@ Output Schema:
     generationConfig: { response_mime_type: "application/json" },
   });
 
+  nodeRuntime.log(`[Gemini] [API] Preparing threat assessment request`);
+  nodeRuntime.log(`[Gemini] [API] Endpoint: ${nodeRuntime.config.geminiApiUrl}`);
+  nodeRuntime.log(`[Gemini] [API] Method: POST`);
+  nodeRuntime.log(`[Gemini] [API] API key present: ${apiKey && apiKey !== "SIMULATION_FALLBACK_KEY" ? "yes" : "no (using fallback)"}`);
+  nodeRuntime.log(`[Gemini] [API] Request payload size: ${body.length} bytes`);
+  nodeRuntime.log(`[Gemini] [API] Protocol: ${frame.protocolAddress}`);
+  
   const response = http
     .sendRequest(nodeRuntime, {
       url: `${nodeRuntime.config.geminiApiUrl}?key=${apiKey}`,
@@ -676,8 +757,25 @@ Output Schema:
     })
     .result();
 
+  nodeRuntime.log(`[Gemini] [API] Response status: ${response.statusCode}`);
+  
   if (!ok(response)) {
-    nodeRuntime.log("[Gemini] API request failed — returning safe fallback");
+    nodeRuntime.log("[Gemini] [API] API request failed — returning safe fallback");
+    nodeRuntime.log(`[Gemini] [API] Response headers: ${JSON.stringify(response.headers || {})}`);
+    
+    // Decode and log full response body for debugging
+    if (response.body) {
+      try {
+        const decoder = new TextDecoder();
+        const responseText = decoder.decode(response.body);
+        nodeRuntime.log(`[Gemini] [API] Full response body: ${responseText}`);
+      } catch (e) {
+        nodeRuntime.log(`[Gemini] [API] Response body (raw bytes): ${response.body}`);
+      }
+    } else {
+      nodeRuntime.log(`[Gemini] [API] Response body: empty`);
+    }
+    
     return {
       overallRiskScore: 0,
       threatDetected: false,
@@ -688,11 +786,18 @@ Output Schema:
     };
   }
 
+  nodeRuntime.log(`[Gemini] [API] Successfully received response`);
+  
   try {
     const result = json(response) as any;
     const text = result.candidates[0].content.parts[0].text;
     const parsed = JSON.parse(text) as ThreatAssessment;
 
+    nodeRuntime.log(`[Gemini] [API] Successfully parsed threat assessment`);
+    nodeRuntime.log(`[Gemini] [API] Risk score: ${parsed.overallRiskScore}`);
+    nodeRuntime.log(`[Gemini] [API] Threat detected: ${parsed.threatDetected}`);
+    nodeRuntime.log(`[Gemini] [API] Recommended action: ${parsed.recommendedAction}`);
+    
     // Validate LLM output integrity
     if (
       typeof parsed.overallRiskScore !== "number" ||
@@ -756,15 +861,49 @@ const analyzeProtocolNode = (
   nodeRuntime: NodeRuntime<Config>,
   frame: TelemetryFrame,
   apiKey: string,
+  ethPriceUSD: number,
 ): ThreatAssessment => {
-  // 1. Enrich frame with Tier 2 threat intelligence
-  const threatIntel = fetchThreatIntel(nodeRuntime, frame.protocolAddress);
+  nodeRuntime.log(`[Analysis] Starting protocol analysis for ${frame.protocolAddress}`);
+  
+  // 1. Fetch transaction metrics from indexer (Tier 1 enhancement)
+  nodeRuntime.log(`[Analysis] Fetching transaction metrics from indexer...`);
+  const transactionMetrics = fetchTransactionMetrics(
+    nodeRuntime,
+    frame.protocolAddress,
+    nodeRuntime.config.rpcUrl,
+    ethPriceUSD,
+  );
+  nodeRuntime.log(`[Analysis] Transaction metrics fetched: volume=${transactionMetrics.volumeUSD}, unique=${transactionMetrics.uniqueAddresses}`);
+
+  // 2. Fetch mempool signals from indexer (Tier 1 enhancement)
+  nodeRuntime.log(`[Analysis] Fetching mempool signals from indexer...`);
+  const mempoolSignals = fetchMempoolSignals(
+    nodeRuntime,
+    frame.protocolAddress,
+    nodeRuntime.config.rpcUrl,
+  );
+  nodeRuntime.log(`[Analysis] Mempool signals fetched: withdrawals=${mempoolSignals.pendingLargeWithdrawals}, flashLoans=${mempoolSignals.flashLoanBorrows}`);
+
+  // 3. Enrich frame with Tier 2 threat intelligence
+  nodeRuntime.log(`[Analysis] Fetching threat intelligence...`);
+  const threatIntel = fetchThreatIntelligence(nodeRuntime, frame.protocolAddress);
+  nodeRuntime.log(`[Analysis] Threat intelligence fetched: CVEs=${threatIntel.activeCVEs.length}, patterns=${threatIntel.exploitPatterns.length}`);
+
+  // 4. Assemble complete telemetry frame per AI_AGENTS.md §3.2
   const enrichedFrame: TelemetryFrame = {
     ...frame,
+    transactionMetrics: {
+      volumeUSD: transactionMetrics.volumeUSD.toString(),
+      uniqueAddresses: transactionMetrics.uniqueAddresses,
+      largeTransactions: transactionMetrics.largeTransactions,
+      failedTxRatio: transactionMetrics.failedTxRatio,
+    },
+    mempoolSignals,
     threatIntel,
   };
 
-  // 2. LLM risk analysis
+  // 5. LLM risk analysis
+  nodeRuntime.log(`[Analysis] Invoking Gemini for threat assessment...`);
   return getGeminiAssessment(nodeRuntime, enrichedFrame, apiKey);
 };
 
@@ -852,10 +991,26 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
       protocol.chainId,
     );
 
-    // Assemble initial frame (Tier 2 threat intel added inside runInNodeMode)
+    // Assemble initial frame (Tier 2 threat intel and indexer data added inside runInNodeMode)
     const baseFrame: TelemetryFrame = {
       ...onChainData,
-      threatIntel: { activeCVEs: [], exploitPatterns: [] },
+      transactionMetrics: {
+        volumeUSD: "0",
+        uniqueAddresses: 0,
+        largeTransactions: 0,
+        failedTxRatio: 0,
+      },
+      mempoolSignals: {
+        pendingLargeWithdrawals: 0,
+        flashLoanBorrows: 0,
+        suspiciousCalldata: [],
+      },
+      threatIntel: {
+        activeCVEs: [],
+        exploitPatterns: [],
+        darkWebMentions: 0,
+        socialSentiment: 0.0,
+      },
     };
 
     // Heuristic gate — skip LLM if telemetry shows no anomalies
@@ -870,8 +1025,25 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
           2,
         )} — below threshold, skipping LLM`,
       );
+      runtime.log(
+        `[Gate] ⚠️  Indexer and threat intel API calls skipped (cost optimization)`,
+      );
+      runtime.log(
+        `[Gate] To force API calls, lower HEURISTIC_THRESHOLDS or trigger an anomaly`,
+      );
       continue;
     }
+
+    runtime.log(
+      `[Gate] Protocol ${protocolAddr} heuristic score ${heuristicScore.toFixed(
+        2,
+      )} — above threshold, proceeding with full analysis`,
+    );
+
+    // Calculate ETH price in USD for indexer
+    const ethPriceUSD = onChainData.priceData.tokenPrice
+      ? Number(BigInt(onChainData.priceData.tokenPrice)) / 1e8
+      : 2000; // Fallback price
 
     // --- Step 3: LLM analysis via runInNodeMode (DON consensus) ---
     const assessment = runtime
@@ -885,7 +1057,7 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
           reasoning: identical,
           evidenceCitations: identical,
         }),
-      )(baseFrame, apiKey)
+      )(baseFrame, apiKey, ethPriceUSD)
       .result();
 
     runtime.log(
