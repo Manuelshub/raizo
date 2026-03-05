@@ -11,7 +11,7 @@ interface IComplianceVault {
         bytes32 agentId; // Which agent generated it
         uint8 reportType; // 1=AML, 2=KYC, 3=ESG, 4=MiCA, 5=Custom
         uint256 timestamp; // When anchored
-        uint16 chainId; // Which chain the report covers
+        uint32 chainId; // Which chain the report covers
         string reportURI; // Encrypted URI to full report (Confidential Compute result)
     }
 
@@ -34,7 +34,7 @@ interface IComplianceVault {
         bytes32 reportHash,
         bytes32 agentId,
         uint8 reportType,
-        uint16 chainId,
+        uint32 chainId,
         string calldata reportURI
     ) external;
 
@@ -62,7 +62,7 @@ interface IComplianceVault {
      * @return An array of ComplianceRecord objects.
      */
     function getReportsByChain(
-        uint16 chainId
+        uint32 chainId
     ) external view returns (ComplianceRecord[] memory);
 
     /**
@@ -78,6 +78,6 @@ interface IComplianceVault {
         bytes32 indexed reportHash,
         bytes32 indexed agentId,
         uint8 reportType,
-        uint16 chainId
+        uint32 chainId
     );
 }

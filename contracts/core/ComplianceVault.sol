@@ -18,7 +18,7 @@ contract ComplianceVault is IComplianceVault, AccessControl {
 
     // Indexing for retrieval
     mapping(uint8 => bytes32[]) private _reportsByType;
-    mapping(uint16 => bytes32[]) private _reportsByChain;
+    mapping(uint32 => bytes32[]) private _reportsByChain;
 
     constructor() {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
@@ -31,7 +31,7 @@ contract ComplianceVault is IComplianceVault, AccessControl {
         bytes32 reportHash,
         bytes32 agentId,
         uint8 reportType,
-        uint16 chainId,
+        uint32 chainId,
         string calldata reportURI
     ) external override {
         if (
@@ -98,7 +98,7 @@ contract ComplianceVault is IComplianceVault, AccessControl {
      * @inheritdoc IComplianceVault
      */
     function getReportsByChain(
-        uint16 chainId
+        uint32 chainId
     ) external view override returns (ComplianceRecord[] memory) {
         bytes32[] memory hashes = _reportsByChain[chainId];
         ComplianceRecord[] memory result = new ComplianceRecord[](

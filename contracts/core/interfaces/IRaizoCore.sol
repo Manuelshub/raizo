@@ -10,7 +10,7 @@ interface IRaizoCore {
     // ─── Structs ───
     struct ProtocolConfig {
         address protocolAddress; // Target protocol contract
-        uint16 chainId; // Chain selector (CCIP format)
+        uint32 chainId; // Chain selector (CCIP format)
         uint8 riskTier; // 1=low, 2=medium, 3=high, 4=critical
         bool isActive;
         uint256 registeredAt;
@@ -39,7 +39,7 @@ interface IRaizoCore {
     // ─── Events ───
     event ProtocolRegistered(
         address indexed protocol,
-        uint16 chainId,
+        uint32 chainId,
         uint8 riskTier
     );
     event ProtocolDeregistered(address indexed protocol);
@@ -55,7 +55,7 @@ interface IRaizoCore {
     // ─── Protocol Management ───
     function registerProtocol(
         address protocol,
-        uint16 chainId,
+        uint32 chainId,
         uint8 riskTier
     ) external;
 

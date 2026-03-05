@@ -32,7 +32,7 @@ contract RaizoConsumer is ReceiverTemplate {
         bytes32 indexed reportId,
         address indexed protocol
     );
-    event ComplianceReportAnchored(bytes32 indexed reportHash, uint16 chainId);
+    event ComplianceReportAnchored(bytes32 indexed reportHash, uint32 chainId);
 
     /**
      * @param _forwarderAddress Chainlink KeystoneForwarder (or MockForwarder for simulation).
@@ -96,9 +96,9 @@ contract RaizoConsumer is ReceiverTemplate {
             bytes32 reportHash,
             bytes32 agentId,
             uint8 reportType,
-            uint16 chainId,
+            uint32 chainId,
             string memory reportURI
-        ) = abi.decode(data, (bytes32, bytes32, uint8, uint16, string));
+        ) = abi.decode(data, (bytes32, bytes32, uint8, uint32, string));
 
         vault.storeReport(reportHash, agentId, reportType, chainId, reportURI);
 

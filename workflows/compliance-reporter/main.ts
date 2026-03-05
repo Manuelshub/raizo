@@ -460,7 +460,7 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
   // Encode ComplianceVault.storeReport params
   const complianceData = encodeAbiParameters(
     parseAbiParameters(
-      "bytes32 reportHash, bytes32 agentId, uint8 reportType, uint16 chainId, string reportURI",
+      "bytes32 reportHash, bytes32 agentId, uint8 reportType, uint32 chainId, string reportURI",
     ),
     [
       reportHash,

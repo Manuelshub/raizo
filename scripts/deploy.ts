@@ -116,8 +116,9 @@ async function main() {
 
   // -- 8. RaizoConsumer ---
   console.log("8/8 Deploying RaizoConsumer...");
+  const fwdAddress = "0x15fC6ae953E024d975e77382eEeC56A9101f9F88";
   const RaizoConsumer = await ethers.getContractFactory("RaizoConsumer");
-  const raizoConsumer = await RaizoConsumer.deploy("0x15fC6ae953E024d975e77382eEeC56A9101f9F88", "0x7832c3Cdea8EAD7206BfE54e3B24679C2975d787", "0x92B10171c849f3b9DBE355658eFE7E84084E42B9");
+  const raizoConsumer = await RaizoConsumer.deploy(fwdAddress, deployed.SentinelActions, deployed.ComplianceVault);
   await raizoConsumer.waitForDeployment();
   deployed.RaizoConsumer = await raizoConsumer.getAddress();
   console.log(`         RaizoConsumer: ${deployed.RaizoConsumer}`);

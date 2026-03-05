@@ -69,7 +69,7 @@ contract RaizoCore is
      */
     function registerProtocol(
         address protocol,
-        uint16 chainId,
+        uint32 chainId,
         uint8 riskTier
     ) external override onlyAdminOrGovernance {
         if (protocol == address(0)) revert ZeroAddress();
