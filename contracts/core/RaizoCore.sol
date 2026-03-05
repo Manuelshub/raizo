@@ -25,6 +25,7 @@ contract RaizoCore is
     mapping(address => ProtocolConfig) private _protocols;
     address[] private _protocolList;
     mapping(bytes32 => AgentConfig) private _agents;
+    mapping(uint32 => uint64) private _relayChains;
     uint16 private _confidenceThreshold;
     uint256 private _epochDuration;
 
@@ -218,6 +219,19 @@ contract RaizoCore is
     }
 
     /**
+     * @notice Maps a source chain ID to a CCIP destination chain selector for relaying alerts.
+     * @param sourceChainId The chain ID of the protocol being monitored.
+     * @param destChainSelector The CCIP selector for the relay destination.
+     */
+    function setRelayChain(
+        uint32 sourceChainId,
+        uint64 destChainSelector
+    ) external override onlyRole(DEFAULT_ADMIN_ROLE) {
+        _relayChains[sourceChainId] = destChainSelector;
+        emit ConfigUpdated("relayChain", uint256(destChainSelector));
+    }
+
+    /**
      * @inheritdoc IRaizoCore
      */
     function getConfidenceThreshold() external view override returns (uint16) {
@@ -229,6 +243,15 @@ contract RaizoCore is
      */
     function getEpochDuration() external view override returns (uint256) {
         return _epochDuration;
+    }
+
+    /**
+     * @inheritdoc IRaizoCore
+     */
+    function getRelayChain(
+        uint32 sourceChainId
+    ) external view override returns (uint64) {
+        return _relayChains[sourceChainId];
     }
 
     uint256[50] private __gap;

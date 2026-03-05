@@ -28,6 +28,7 @@ contract RaizoConsumer is ReceiverTemplate {
     error SentinelNotConfigured();
     error VaultNotConfigured();
 
+    event ReportReceived(uint8 indexed reportType, bytes32 indexed sourceHash);
     event ThreatReportForwarded(
         bytes32 indexed reportId,
         address indexed protocol
@@ -57,6 +58,8 @@ contract RaizoConsumer is ReceiverTemplate {
             report,
             (uint8, bytes)
         );
+
+        emit ReportReceived(reportType, keccak256(report));
 
         if (reportType == REPORT_TYPE_THREAT) {
             _handleThreatReport(data);

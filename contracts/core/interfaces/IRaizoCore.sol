@@ -87,7 +87,14 @@ interface IRaizoCore {
 
     function setEpochDuration(uint256 duration) external;
 
+    function setRelayChain(
+        uint32 sourceChainId,
+        uint64 destChainSelector
+    ) external;
+
     function getConfidenceThreshold() external view returns (uint16);
 
     function getEpochDuration() external view returns (uint256);
+
+    function getRelayChain(uint32 sourceChainId) external view returns (uint64);
 }

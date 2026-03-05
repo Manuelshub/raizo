@@ -2,6 +2,7 @@ import "@nomicfoundation/hardhat-toolbox";
 import "@openzeppelin/hardhat-upgrades";
 import { HardhatUserConfig } from "hardhat/types";
 import * as dotenv from "dotenv";
+import "./tasks/raizo-status";
 
 dotenv.config();
 
@@ -34,7 +35,8 @@ const config: HardhatUserConfig = {
         : [],
     },
     sepolia: {
-      url: process.env.SEPOLIA_RPC_URL || "https://eth-sepolia.public.blastapi.io",
+      url:
+        process.env.SEPOLIA_RPC_URL || "https://eth-sepolia.public.blastapi.io",
       accounts: process.env.DEPLOYER_PRIVATE_KEY
         ? [process.env.DEPLOYER_PRIVATE_KEY]
         : [],

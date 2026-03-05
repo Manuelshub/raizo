@@ -72,6 +72,7 @@ interface ISentinelActions {
         Severity severity,
         uint16 confidence
     );
+    event ActionCallFailed(address indexed protocol, string reason);
     event ActionLifted(bytes32 indexed reportId, address indexed protocol);
     event EmergencyPause(address indexed protocol, address indexed caller);
 }
