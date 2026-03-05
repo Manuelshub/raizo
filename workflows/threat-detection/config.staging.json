@@ -2,11 +2,12 @@
   "schedule": "*/30 * * * *",
   "raizoCoreAddress": "0x85EC882f1cE7F310Ce6D12379B505d7589b34Ac3",
   "sentinelActionsAddress": "0x7832c3Cdea8EAD7206BfE54e3B24679C2975d787",
+  "consumerAddress": "0x0000000000000000000000000000000000000000",
   "operatorAddress": "0xF89227c33F8Ef6f623ad9303e72cf8dc17f7643F",
   "geminiApiUrl": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
   "chainName": "ethereum-testnet-sepolia",
-  "rpcUrl": "https://ethereum-sepolia-rpc.publicnode.com",
-  "telemetryCacheAddress": "0xB3E4310312Bce3BA4372982351C4e616e96dcBe2",
+  "isTestnet": true,
+  "gasLimit": "500000",
   "priceFeedAddresses": {
     "0x94a9D9AC8a22534E3FaCa9F4e7F2E2cf85d5E4C8": "0x694AA1769357215DE4FAC081bf1f309aDC325306",
     "0x3e3FE7dBc6B4C189E7128855dD526361c49b40Af": "0x694AA1769357215DE4FAC081bf1f309aDC325306"

@@ -5,5 +5,7 @@
   "raizoCoreAddress": "0x85EC882f1cE7F310Ce6D12379B505d7589b34Ac3",
   "operatorAddress": "0xF89227c33F8Ef6f623ad9303e72cf8dc17f7643F",
   "chainName": "ethereum-testnet-sepolia",
+  "chainId": 11155111,
+  "isTestnet": true,
   "targetChainSelectors": []
 }
