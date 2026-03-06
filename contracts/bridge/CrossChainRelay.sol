@@ -13,15 +13,14 @@ import {
 import {
     AccessControlUpgradeable
 } from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
-import {
-    Client,
-    IRouterClient,
-    IAny2EVMMessageReceiver
-} from "../test/MockCCIP.sol"; // Using mocks for now
+import {Client} from "@chainlink/contracts-ccip/contracts/libraries/Client.sol";
+import {IRouterClient} from "@chainlink/contracts-ccip/contracts/interfaces/IRouterClient.sol";
+import {IAny2EVMMessageReceiver} from "@chainlink/contracts-ccip/contracts/interfaces/IAny2EVMMessageReceiver.sol";
 
 /**
  * @title CrossChainRelay
- * @notice Skeletal implementation for TDD Red Phase.
+ * @notice CCIP-aware relay for cross-chain alert propagation and protective actions.
+ * @dev Uses real Chainlink CCIP Router for cross-chain messaging.
  */
 contract CrossChainRelay is
     ICrossChainRelay,
@@ -250,6 +249,20 @@ contract CrossChainRelay is
     function _authorizeUpgrade(
         address newImplementation
     ) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
+
+    /// @notice Accept ETH for CCIP fee payments.
+    receive() external payable {}
+
+    /// @notice Withdraw native ETH from the contract (admin only).
+    /// @param to Recipient address.
+    /// @param amount Amount of ETH to withdraw.
+    function withdrawNative(address payable to, uint256 amount) external {
+        if (!hasRole(DEFAULT_ADMIN_ROLE, msg.sender)) {
+            revert AccessDenied(msg.sender, DEFAULT_ADMIN_ROLE);
+        }
+        (bool success, ) = to.call{value: amount}("");
+        if (!success) revert TransferFailed();
+    }
 
     uint256[50] private __gap;
 }

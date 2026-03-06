@@ -154,10 +154,11 @@ contract SentinelActions is
                         report.reportId,
                         report.action,
                         report.targetProtocol,
-                        ""
+                        "" // Default empty payload for automated relay
                     )
                 {} catch {
-                    // Fail-safe: log but do not revert primary action if relay fails
+                    // In case of relay failure (e.g. gas), we log but don't revert
+                    // the primary protective action.
                 }
             }
         }

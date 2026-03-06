@@ -51,6 +51,7 @@ interface IRaizoCore {
     event AgentRegistered(bytes32 indexed agentId, address paymentWallet);
     event AgentDeregistered(bytes32 indexed agentId);
     event ConfigUpdated(string key, uint256 value);
+    event RelayChainSet(uint64 indexed ccipSelector, address relayAddress);
 
     // ─── Protocol Management ───
     function registerProtocol(
@@ -87,14 +88,15 @@ interface IRaizoCore {
 
     function setEpochDuration(uint256 duration) external;
 
+    function getConfidenceThreshold() external view returns (uint16);
+
+    function getEpochDuration() external view returns (uint256);
+
+    // ─── Relay Chain Mapping ───
     function setRelayChain(
         uint32 sourceChainId,
         uint64 destChainSelector
     ) external;
-
-    function getConfidenceThreshold() external view returns (uint16);
-
-    function getEpochDuration() external view returns (uint256);
 
     function getRelayChain(uint32 sourceChainId) external view returns (uint64);
 }

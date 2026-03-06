@@ -1,50 +1,19 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.23;
 
+import {Client} from "@chainlink/contracts-ccip/contracts/libraries/Client.sol";
+import {IRouterClient} from "@chainlink/contracts-ccip/contracts/interfaces/IRouterClient.sol";
+import {IAny2EVMMessageReceiver} from "@chainlink/contracts-ccip/contracts/interfaces/IAny2EVMMessageReceiver.sol";
+
 /**
- * @title MockCCIP
- * @notice Minimal CCIP interfaces and library for testing.
+ * @title MockCCIPRouter
+ * @notice Mock CCIP Router for local/unit testing. Uses real Chainlink types for compatibility.
  */
-library Client {
-    struct EVMTokenAmount {
-        address token;
-        uint256 amount;
-    }
-
-    struct Any2EVMMessage {
-        bytes32 messageId;
-        uint64 sourceChainSelector;
-        bytes sender;
-        bytes data;
-        EVMTokenAmount[] destTokenAmounts;
-    }
-
-    struct EVM2AnyMessage {
-        bytes receiver;
-        bytes data;
-        EVMTokenAmount[] tokenAmounts;
-        address feeToken;
-        bytes extraArgs;
-    }
-}
-
-interface IRouterClient {
-    function getFee(
-        uint64 destinationChainSelector,
-        Client.EVM2AnyMessage memory message
-    ) external view returns (uint256 fee);
-
-    function ccipSend(
-        uint64 destinationChainSelector,
-        Client.EVM2AnyMessage calldata message
-    ) external payable returns (bytes32);
-}
-
-interface IAny2EVMMessageReceiver {
-    function ccipReceive(Client.Any2EVMMessage calldata message) external;
-}
-
 contract MockCCIPRouter is IRouterClient {
+    function isChainSupported(uint64) external pure returns (bool) {
+        return true;
+    }
+
     function getFee(
         uint64,
         Client.EVM2AnyMessage memory
