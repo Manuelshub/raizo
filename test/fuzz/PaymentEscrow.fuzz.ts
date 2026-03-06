@@ -43,7 +43,7 @@ describe("PaymentEscrow Deep Fuzz Suite", function () {
         const usdc = await MockFactory.deploy() as unknown as MockUSDC;
 
         const AGENT_ID = ethers.keccak256(ethers.toUtf8Bytes("fuzz-escrow"));
-        await raizoCore.registerAgent(AGENT_ID, agentWallet.address, limit);
+        await raizoCore.registerAgent(AGENT_ID, agentWallet.address, limit, 10);
 
         const EscrowFactory = await ethers.getContractFactory("PaymentEscrow");
         const escrow = (await upgrades.deployProxy(
@@ -309,7 +309,7 @@ describe("PaymentEscrow Deep Fuzz Suite", function () {
             ];
 
             for (const a of agents) {
-                await raizoCore.registerAgent(a.id, a.wallet.address, a.limit);
+                await raizoCore.registerAgent(a.id, a.wallet.address, a.limit, 10);
             }
 
             const EscrowFactory = await ethers.getContractFactory("PaymentEscrow");
@@ -503,7 +503,7 @@ describe("PaymentEscrow Deep Fuzz Suite", function () {
             const limit = ethers.parseUnits("1000", 6); // High limit
             const smallDeposit = ethers.parseUnits("5", 6); // Small balance
 
-            await raizoCore.registerAgent(AGENT_ID, agentWallet.address, limit);
+            await raizoCore.registerAgent(AGENT_ID, agentWallet.address, limit, 10);
 
             const EscrowFactory = await ethers.getContractFactory("PaymentEscrow");
             const escrow = (await upgrades.deployProxy(

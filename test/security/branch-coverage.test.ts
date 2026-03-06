@@ -165,14 +165,14 @@ describe("RaizoCore Branch Coverage", function () {
   describe("registerAgent guard branches", function () {
     it("reverts on zero-address wallet (L165 true branch)", async function () {
       await expect(
-        raizo.registerAgent(AGENT_ID, ethers.ZeroAddress, BUDGET_USDC),
+        raizo.registerAgent(AGENT_ID, ethers.ZeroAddress, BUDGET_USDC, 10),
       ).to.be.revertedWithCustomError(raizo, "ZeroAddress");
     });
 
     it("reverts on duplicate agent (L166 true branch)", async function () {
-      await raizo.registerAgent(AGENT_ID, addr1.address, BUDGET_USDC);
+      await raizo.registerAgent(AGENT_ID, addr1.address, BUDGET_USDC, 10);
       await expect(
-        raizo.registerAgent(AGENT_ID, addr2.address, BUDGET_USDC),
+        raizo.registerAgent(AGENT_ID, addr2.address, BUDGET_USDC, 10),
       ).to.be.revertedWithCustomError(raizo, "AgentAlreadyRegistered");
     });
   });
@@ -180,7 +180,7 @@ describe("RaizoCore Branch Coverage", function () {
   // --- deregisterAgent (Lines 183-184 — completely untested) ---
   describe("deregisterAgent (all branches)", function () {
     it("admin deregisters active agent (L183-184 happy path)", async function () {
-      await raizo.registerAgent(AGENT_ID, addr1.address, BUDGET_USDC);
+      await raizo.registerAgent(AGENT_ID, addr1.address, BUDGET_USDC, 10);
       await expect(raizo.deregisterAgent(AGENT_ID))
         .to.emit(raizo, "AgentDeregistered")
         .withArgs(AGENT_ID);
@@ -195,7 +195,7 @@ describe("RaizoCore Branch Coverage", function () {
     });
 
     it("non-admin cannot deregister (L184 modifier revert)", async function () {
-      await raizo.registerAgent(AGENT_ID, addr1.address, BUDGET_USDC);
+      await raizo.registerAgent(AGENT_ID, addr1.address, BUDGET_USDC, 10);
       await expect(raizo.connect(addr1).deregisterAgent(AGENT_ID))
         .to.be.revertedWithCustomError(
           raizo,
@@ -295,7 +295,7 @@ describe("SentinelActions Branch Coverage", function () {
     await raizoCore.grantRole(GOVERNANCE_ROLE, owner.address);
     await sentinel.grantRole(EMERGENCY_ROLE, emergency.address);
     await raizoCore.registerProtocol(PROTOCOL_A, CHAIN_ID, 2);
-    await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET_USDC);
+    await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET_USDC, 10);
     await raizoCore.connect(owner).setConfidenceThreshold(8500);
   });
 
@@ -452,7 +452,7 @@ describe("PaymentEscrow Branch Coverage", function () {
     const MockUSDCFactory = await ethers.getContractFactory("MockUSDC");
     usdc = await MockUSDCFactory.deploy();
 
-    await raizoCore.registerAgent(AGENT_ID, agentWallet.address, DAILY_LIMIT);
+    await raizoCore.registerAgent(AGENT_ID, agentWallet.address, DAILY_LIMIT, 10);
 
     const PaymentEscrowFactory = await ethers.getContractFactory(
       "PaymentEscrow",

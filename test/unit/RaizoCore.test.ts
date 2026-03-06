@@ -94,7 +94,14 @@ describe("RaizoCore (Upgradeable)", function () {
 
   describe("Agent Management", function () {
     it("should register an agent (Admin only)", async function () {
-      await expect(raizo.registerAgent(AGENT_ID, addr1.address, BUDGET_USDC))
+      await expect(
+        raizo.registerAgent(
+          AGENT_ID,
+          addr1.address,
+          BUDGET_USDC,
+          ACTION_BUDGET,
+        ),
+      )
         .to.emit(raizo, "AgentRegistered")
         .withArgs(AGENT_ID, addr1.address);
 
@@ -109,7 +116,7 @@ describe("RaizoCore (Upgradeable)", function () {
       await expect(
         raizo
           .connect(governance)
-          .registerAgent(AGENT_ID, addr1.address, BUDGET_USDC),
+          .registerAgent(AGENT_ID, addr1.address, BUDGET_USDC, ACTION_BUDGET),
       )
         .to.be.revertedWithCustomError(
           raizo,
@@ -132,6 +139,34 @@ describe("RaizoCore (Upgradeable)", function () {
       await expect(
         raizo.connect(governance).setConfidenceThreshold(10001),
       ).to.be.revertedWithCustomError(raizo, "InvalidThreshold");
+    });
+
+    it("should set and get action budget", async function () {
+      await raizo.registerAgent(
+        AGENT_ID,
+        addr1.address,
+        BUDGET_USDC,
+        ACTION_BUDGET,
+      );
+      await expect(raizo.setActionBudget(AGENT_ID, 20))
+        .to.emit(raizo, "ConfigUpdated")
+        .withArgs("agentActionBudget", 20);
+      expect((await raizo.getAgent(AGENT_ID)).actionBudgetPerEpoch).to.equal(
+        20,
+      );
+    });
+
+    it("should set and get relay configuration", async function () {
+      const DEST_SELECTOR = 101n;
+      const RELAY_ADDR = addr2.address;
+      await expect(
+        raizo.setRelayChain(CHAIN_ETHEREUM, DEST_SELECTOR, RELAY_ADDR),
+      )
+        .to.emit(raizo, "RelayChainSet")
+        .withArgs(DEST_SELECTOR, RELAY_ADDR);
+
+      expect(await raizo.getRelayChain(CHAIN_ETHEREUM)).to.equal(DEST_SELECTOR);
+      expect(await raizo.getRelayAddress(CHAIN_ETHEREUM)).to.equal(RELAY_ADDR);
     });
   });
 

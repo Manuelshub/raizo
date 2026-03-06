@@ -98,7 +98,7 @@ describe("SentinelActions Deep Fuzz Suite", function () {
         it("should correctly enforce budget for 100 randomized reports", async function () {
             const { raizoCore, sentinel, agentWallet, node1, node2 } = await deployFresh();
             const AGENT_ID = ethers.keccak256(ethers.toUtf8Bytes("fuzz-agent-sa1"));
-            await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET_USDC);
+            await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET_USDC, 10);
 
             let successCount = 0;
 
@@ -137,7 +137,7 @@ describe("SentinelActions Deep Fuzz Suite", function () {
         it("budget resets when time crosses an epoch boundary", async function () {
             const { raizoCore, sentinel, agentWallet, node1, node2 } = await deployFresh();
             const AGENT_ID = ethers.keccak256(ethers.toUtf8Bytes("epoch-agent"));
-            await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET_USDC);
+            await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET_USDC, 10);
 
             // Exhaust budget in current epoch
             for (let i = 0; i < ACTION_BUDGET; i++) {
@@ -167,7 +167,7 @@ describe("SentinelActions Deep Fuzz Suite", function () {
         it("fuzz: budget correctly tracks across multiple epoch rollovers", async function () {
             const { raizoCore, sentinel, agentWallet, node1, node2 } = await deployFresh();
             const AGENT_ID = ethers.keccak256(ethers.toUtf8Bytes("multi-epoch"));
-            await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET_USDC);
+            await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET_USDC, 10);
 
             for (let epoch = 0; epoch < 5; epoch++) {
                 // Use 3 random actions per epoch (well within budget)
@@ -203,7 +203,7 @@ describe("SentinelActions Deep Fuzz Suite", function () {
             ];
 
             for (const a of agents) {
-                await raizoCore.registerAgent(a.id, a.wallet.address, BUDGET_USDC);
+                await raizoCore.registerAgent(a.id, a.wallet.address, BUDGET_USDC, 10);
             }
 
             // Each agent executes a random number of actions (1-5)
@@ -231,8 +231,8 @@ describe("SentinelActions Deep Fuzz Suite", function () {
 
             const AGENT_A = ethers.keccak256(ethers.toUtf8Bytes("exhaust-a"));
             const AGENT_B = ethers.keccak256(ethers.toUtf8Bytes("fresh-b"));
-            await raizoCore.registerAgent(AGENT_A, agentWallet.address, BUDGET_USDC);
-            await raizoCore.registerAgent(AGENT_B, agent2Wallet.address, BUDGET_USDC);
+            await raizoCore.registerAgent(AGENT_A, agentWallet.address, BUDGET_USDC, 10);
+            await raizoCore.registerAgent(AGENT_B, agent2Wallet.address, BUDGET_USDC, 10);
 
             // Exhaust Agent A's budget
             for (let i = 0; i < ACTION_BUDGET; i++) {
@@ -260,7 +260,7 @@ describe("SentinelActions Deep Fuzz Suite", function () {
         it("PAUSE, RATE_LIMIT, DRAIN_BLOCK, ALERT, CUSTOM all execute successfully", async function () {
             const { raizoCore, sentinel, agentWallet, node1, node2 } = await deployFresh();
             const AGENT_ID = ethers.keccak256(ethers.toUtf8Bytes("action-type-agent"));
-            await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET_USDC);
+            await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET_USDC, 10);
 
             const actionTypes = [0, 1, 2, 3, 4]; // PAUSE, RATE_LIMIT, DRAIN_BLOCK, ALERT, CUSTOM
 
@@ -296,7 +296,7 @@ describe("SentinelActions Deep Fuzz Suite", function () {
             node1 = ctx.node1;
             node2 = ctx.node2;
             AGENT_ID = ethers.keccak256(ethers.toUtf8Bytes("boundary-agent"));
-            await raizoCore.registerAgent(AGENT_ID, ctx.agentWallet.address, BUDGET_USDC);
+            await raizoCore.registerAgent(AGENT_ID, ctx.agentWallet.address, BUDGET_USDC, 10);
         });
 
         it("confidence 8499 (just below threshold) → revert", async function () {
@@ -354,7 +354,7 @@ describe("SentinelActions Deep Fuzz Suite", function () {
         it("sequential actions within budget are all tracked correctly", async function () {
             const { raizoCore, sentinel, agentWallet, node1, node2 } = await deployFresh();
             const AGENT_ID = ethers.keccak256(ethers.toUtf8Bytes("rapid-fire"));
-            await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET_USDC);
+            await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET_USDC, 10);
 
             for (let i = 0; i < ACTION_BUDGET; i++) {
                 const r = await buildSignedReport(node1, node2, { agentId: AGENT_ID });
@@ -380,7 +380,7 @@ describe("SentinelActions Deep Fuzz Suite", function () {
         it("empty signatures (0 bytes) → InvalidSignatures", async function () {
             const { raizoCore, sentinel, agentWallet } = await deployFresh();
             const AGENT_ID = ethers.keccak256(ethers.toUtf8Bytes("sig-len-agent"));
-            await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET_USDC);
+            await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET_USDC, 10);
 
             const report = {
                 reportId: ethers.keccak256(ethers.randomBytes(32)),
@@ -402,7 +402,7 @@ describe("SentinelActions Deep Fuzz Suite", function () {
         it("non-empty signatures (valid length) → accepted", async function () {
             const { raizoCore, sentinel, agentWallet, node1, node2 } = await deployFresh();
             const AGENT_ID = ethers.keccak256(ethers.toUtf8Bytes("sig-valid-agent"));
-            await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET_USDC);
+            await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET_USDC, 10);
 
             const r = await buildSignedReport(node1, node2, { agentId: AGENT_ID });
             await expect(sentinel.executeAction(r))
@@ -412,7 +412,7 @@ describe("SentinelActions Deep Fuzz Suite", function () {
         it("fuzz: various non-zero signature lengths are accepted", async function () {
             const { raizoCore, sentinel, agentWallet } = await deployFresh();
             const AGENT_ID = ethers.keccak256(ethers.toUtf8Bytes("sig-fuzz-agent"));
-            await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET_USDC);
+            await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET_USDC, 10);
 
             // The current stub only checks length > 0, so any non-empty bytes pass
             const sigLengths = [32, 64, 65, 130, 195];
@@ -444,7 +444,7 @@ describe("SentinelActions Deep Fuzz Suite", function () {
         it("accepts unique IDs and rejects all duplicates in a 50-report burst", async function () {
             const { raizoCore, sentinel, agentWallet, node1, node2 } = await deployFresh();
             const AGENT_ID = ethers.keccak256(ethers.toUtf8Bytes("dup-stress-agent"));
-            await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET_USDC);
+            await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET_USDC, 10);
 
             // Only track IDs that were actually stored on-chain (accepted).
             // Budget-rejected IDs are never persisted so they aren't duplicates.

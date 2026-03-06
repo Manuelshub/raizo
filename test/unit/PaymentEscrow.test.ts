@@ -36,7 +36,12 @@ describe("PaymentEscrow (TDD Red Phase)", function () {
     usdc = await MockUSDCFactory.deploy();
 
     // 3. Register Agent in RaizoCore
-    await raizoCore.registerAgent(AGENT_ID, agentWallet.address, DAILY_LIMIT);
+    await raizoCore.registerAgent(
+      AGENT_ID,
+      agentWallet.address,
+      DAILY_LIMIT,
+      10,
+    );
 
     // 4. Deploy PaymentEscrow
     const PaymentEscrowFactory = await ethers.getContractFactory(
@@ -399,7 +404,7 @@ describe("PaymentEscrow (TDD Red Phase)", function () {
     it("should fail if balance is insufficient", async function () {
       // Create new agent with NO funds
       const emptyAgent = ethers.id("empty-agent");
-      await raizoCore.registerAgent(emptyAgent, owner.address, DAILY_LIMIT);
+      await raizoCore.registerAgent(emptyAgent, owner.address, DAILY_LIMIT, 10);
 
       const sig = await owner.signTypedData(
         {

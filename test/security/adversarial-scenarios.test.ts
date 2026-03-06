@@ -61,7 +61,7 @@ describe("ADV-1/ADV-2: Reentrancy guards", function () {
         const GOV = await raizoCore.GOVERNANCE_ROLE();
         await raizoCore.grantRole(GOV, owner.address);
         await raizoCore.registerProtocol(PROTOCOL_A, 1, 2);
-        await raizoCore.registerAgent(AGENT_ID, agentWallet.address, DAILY_LIMIT);
+        await raizoCore.registerAgent(AGENT_ID, agentWallet.address, DAILY_LIMIT, 10);
 
         const SentinelFactory = await ethers.getContractFactory("SentinelActions");
         sentinel = (await upgrades.deployProxy(
@@ -176,7 +176,7 @@ describe("ADV-3: DON consensus failure", function () {
         const GOV = await raizoCore.GOVERNANCE_ROLE();
         await raizoCore.grantRole(GOV, owner.address);
         await raizoCore.registerProtocol(PROTOCOL, 1, 2);
-        await raizoCore.registerAgent(AGENT_ID, agentWallet.address, ethers.parseUnits("100", 6));
+        await raizoCore.registerAgent(AGENT_ID, agentWallet.address, ethers.parseUnits("100", 6), 10);
 
         const SentinelFactory = await ethers.getContractFactory("SentinelActions");
         sentinel = (await upgrades.deployProxy(
@@ -363,7 +363,7 @@ describe("ADV-6: Payment authorization replay", function () {
         )) as unknown as RaizoCore;
 
         usdc = await (await ethers.getContractFactory("MockUSDC")).deploy();
-        await raizoCore.registerAgent(AGENT_ID, agentWallet.address, LIMIT);
+        await raizoCore.registerAgent(AGENT_ID, agentWallet.address, LIMIT, 10);
 
         escrow = (await upgrades.deployProxy(
             await ethers.getContractFactory("PaymentEscrow"),
@@ -530,7 +530,7 @@ describe("ADV-8: Edge-case inputs and boundary conditions", function () {
         const GOV = await raizoCore.GOVERNANCE_ROLE();
         await raizoCore.grantRole(GOV, owner.address);
         await raizoCore.registerProtocol(PROTOCOL, 1, 2);
-        await raizoCore.registerAgent(AGENT_ID, agentWallet.address, ethers.parseUnits("100", 6));
+        await raizoCore.registerAgent(AGENT_ID, agentWallet.address, ethers.parseUnits("100", 6), 10);
 
         sentinel = (await upgrades.deployProxy(
             await ethers.getContractFactory("SentinelActions"),
@@ -703,7 +703,7 @@ describe("ADV-10: Agent deactivation mid-flow", function () {
         const GOV = await raizoCore.GOVERNANCE_ROLE();
         await raizoCore.grantRole(GOV, owner.address);
         await raizoCore.registerProtocol(PROTOCOL, 1, 2);
-        await raizoCore.registerAgent(AGENT_ID, agentWallet.address, DAILY_LIMIT);
+        await raizoCore.registerAgent(AGENT_ID, agentWallet.address, DAILY_LIMIT, 10);
 
         const SentinelFactory = await ethers.getContractFactory("SentinelActions");
         sentinel = (await upgrades.deployProxy(
@@ -842,7 +842,7 @@ describe("ADV-11: Epoch boundary budget manipulation", function () {
         const GOV = await raizoCore.GOVERNANCE_ROLE();
         await raizoCore.grantRole(GOV, owner.address);
         await raizoCore.registerProtocol(PROTOCOL, 1, 2);
-        await raizoCore.registerAgent(AGENT_ID, agentWallet.address, ethers.parseUnits("100", 6));
+        await raizoCore.registerAgent(AGENT_ID, agentWallet.address, ethers.parseUnits("100", 6), 10);
 
         sentinel = (await upgrades.deployProxy(
             await ethers.getContractFactory("SentinelActions"),

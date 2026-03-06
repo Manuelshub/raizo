@@ -56,7 +56,12 @@ describe("SentinelActions (Upgradeable)", function () {
     await raizoCore.grantRole(GOVERNANCE_ROLE, owner.address);
     await sentinel.grantRole(EMERGENCY_ROLE, emergency.address);
     await raizoCore.registerProtocol(PROTOCOL_A, CHAIN_ID, RISK_MEDIUM);
-    await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET_USDC);
+    await raizoCore.registerAgent(
+      AGENT_ID,
+      agentWallet.address,
+      BUDGET_USDC,
+      ACTION_BUDGET,
+    );
     await raizoCore.setConfidenceThreshold(THRESHOLD_BPS);
   });
 

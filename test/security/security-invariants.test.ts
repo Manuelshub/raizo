@@ -118,7 +118,7 @@ describe("INV-2: SentinelActions — DON signature required", function () {
         const GOV_ROLE = await raizoCore.GOVERNANCE_ROLE();
         await raizoCore.grantRole(GOV_ROLE, owner.address);
         await raizoCore.registerProtocol(PROTOCOL_A, 1, 2);
-        await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET);
+        await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET, 10);
     });
 
     it("reverts when donSignatures is empty (0 nodes)", async function () {
@@ -201,7 +201,7 @@ describe("INV-3: SentinelActions — action budget cap", function () {
         const GOV_ROLE = await raizoCore.GOVERNANCE_ROLE();
         await raizoCore.grantRole(GOV_ROLE, owner.address);
         await raizoCore.registerProtocol(PROTOCOL_A, 1, 2);
-        await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET);
+        await raizoCore.registerAgent(AGENT_ID, agentWallet.address, BUDGET, 10);
     });
 
     async function signedReport(id: string) {
@@ -278,7 +278,7 @@ describe("INV-4: PaymentEscrow — daily spending limit", function () {
         const MockFactory = await ethers.getContractFactory("MockUSDC");
         usdc = await MockFactory.deploy();
 
-        await raizoCore.registerAgent(AGENT_ID, agentWallet.address, DAILY_LIMIT);
+        await raizoCore.registerAgent(AGENT_ID, agentWallet.address, DAILY_LIMIT, 10);
 
         const EscrowFactory = await ethers.getContractFactory("PaymentEscrow");
         escrow = (await upgrades.deployProxy(
@@ -376,7 +376,7 @@ describe("INV-5: PaymentEscrow — nonce uniqueness", function () {
         const MockFactory = await ethers.getContractFactory("MockUSDC");
         usdc = await MockFactory.deploy();
 
-        await raizoCore.registerAgent(AGENT_ID, agentWallet.address, DAILY_LIMIT);
+        await raizoCore.registerAgent(AGENT_ID, agentWallet.address, DAILY_LIMIT, 10);
 
         const EscrowFactory = await ethers.getContractFactory("PaymentEscrow");
         escrow = (await upgrades.deployProxy(
