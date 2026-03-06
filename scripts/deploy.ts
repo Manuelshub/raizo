@@ -19,16 +19,19 @@ import { RaizoConsumer__factory } from "@/*";
  */
 
 // --- Testnet Addresses ---
-const TESTNET_ADDRESSES: Record<string, { worldId: string; usdc: string; ccipRouter: string }> = {
+const TESTNET_ADDRESSES: Record<
+  string,
+  { worldId: string; usdc: string; ccipRouter: string }
+> = {
   sepolia: {
-    worldId: "0x0000000000000000000000000000000000000000",   // Placeholder — no World ID on Sepolia
-    usdc: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",      // Circle USDC on Sepolia
-    ccipRouter: "0x0BF3dE8c5D3e8A2B34D2BEeB17ABfCeBaf363A59",  // Chainlink CCIP Router Sepolia
+    worldId: "0x0000000000000000000000000000000000000000", // Placeholder — no World ID on Sepolia
+    usdc: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", // Circle USDC on Sepolia
+    ccipRouter: "0x0BF3dE8c5D3e8A2B34D2BEeB17ABfCeBaf363A59", // Chainlink CCIP Router Sepolia
   },
   baseSepolia: {
     worldId: "0x0000000000000000000000000000000000000000",
-    usdc: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",      // Circle USDC on Base Sepolia
-    ccipRouter: "0xD3b06cEbF099CE7DA4AcCf578aaebFDBd6e88a93",  // Chainlink CCIP Router Base Sepolia
+    usdc: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", // Circle USDC on Base Sepolia
+    ccipRouter: "0xD3b06cEbF099CE7DA4AcCf578aaebFDBd6e88a93", // Chainlink CCIP Router Base Sepolia
   },
   hardhat: {
     worldId: "0x0000000000000000000000000000000000000000",
@@ -49,7 +52,11 @@ async function main() {
 
   console.log(`\n Raizo Deployment — ${network} (chainId: ${chainId})`);
   console.log(`   Deployer: ${deployer.address}`);
-  console.log(`   Balance:  ${ethers.formatEther(await ethers.provider.getBalance(deployer.address))} ETH\n`);
+  console.log(
+    `   Balance:  ${ethers.formatEther(
+      await ethers.provider.getBalance(deployer.address),
+    )} ETH\n`,
+  );
 
   const addrs = TESTNET_ADDRESSES[network] || TESTNET_ADDRESSES.hardhat;
   const deployed: Record<string, string> = {};
@@ -65,7 +72,11 @@ async function main() {
   // --- 2. GovernanceGate ---
   console.log("2/6 Deploying GovernanceGate (UUPS proxy)...");
   const GovernanceGate = await ethers.getContractFactory("GovernanceGate");
-  const governanceGate = await upgrades.deployProxy(GovernanceGate, [addrs.worldId], { kind: "uups" });
+  const governanceGate = await upgrades.deployProxy(
+    GovernanceGate,
+    [addrs.worldId],
+    { kind: "uups" },
+  );
   await governanceGate.waitForDeployment();
   deployed.GovernanceGate = await governanceGate.getAddress();
   console.log(`      GovernanceGate: ${deployed.GovernanceGate}`);
@@ -73,7 +84,11 @@ async function main() {
   // --- 3. SentinelActions ---
   console.log("3/6 Deploying SentinelActions (UUPS proxy)...");
   const SentinelActions = await ethers.getContractFactory("SentinelActions");
-  const sentinelActions = await upgrades.deployProxy(SentinelActions, [deployed.RaizoCore], { kind: "uups" });
+  const sentinelActions = await upgrades.deployProxy(
+    SentinelActions,
+    [deployed.RaizoCore],
+    { kind: "uups" },
+  );
   await sentinelActions.waitForDeployment();
   deployed.SentinelActions = await sentinelActions.getAddress();
   console.log(`      SentinelActions: ${deployed.SentinelActions}`);
@@ -81,7 +96,11 @@ async function main() {
   // --- 4. PaymentEscrow ---
   console.log("4/6 Deploying PaymentEscrow (UUPS proxy)...");
   const PaymentEscrow = await ethers.getContractFactory("PaymentEscrow");
-  const paymentEscrow = await upgrades.deployProxy(PaymentEscrow, [deployed.RaizoCore, addrs.usdc], { kind: "uups" });
+  const paymentEscrow = await upgrades.deployProxy(
+    PaymentEscrow,
+    [deployed.RaizoCore, addrs.usdc],
+    { kind: "uups" },
+  );
   await paymentEscrow.waitForDeployment();
   deployed.PaymentEscrow = await paymentEscrow.getAddress();
   console.log(`      PaymentEscrow: ${deployed.PaymentEscrow}`);
@@ -100,7 +119,7 @@ async function main() {
   const crossChainRelay = await upgrades.deployProxy(
     CrossChainRelay,
     [addrs.ccipRouter, deployed.SentinelActions, deployed.RaizoCore],
-    { kind: "uups" }
+    { kind: "uups" },
   );
   await crossChainRelay.waitForDeployment();
   deployed.CrossChainRelay = await crossChainRelay.getAddress();
@@ -118,7 +137,12 @@ async function main() {
   console.log("8/8 Deploying RaizoConsumer...");
   const fwdAddress = "0x15fC6ae953E024d975e77382eEeC56A9101f9F88";
   const RaizoConsumer = await ethers.getContractFactory("RaizoConsumer");
-  const raizoConsumer = await RaizoConsumer.deploy(fwdAddress, deployed.SentinelActions, deployed.ComplianceVault);
+  const raizoConsumer = await RaizoConsumer.deploy(
+    fwdAddress,
+    deployed.SentinelActions,
+    deployed.ComplianceVault,
+    deployed.PaymentEscrow,
+  );
   await raizoConsumer.waitForDeployment();
   deployed.RaizoConsumer = await raizoConsumer.getAddress();
   console.log(`         RaizoConsumer: ${deployed.RaizoConsumer}`);

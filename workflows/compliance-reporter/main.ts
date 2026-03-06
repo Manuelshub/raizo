@@ -25,6 +25,7 @@ import {
   stringToHex,
   zeroAddress,
 } from "viem";
+import { generatePaymentAuthorization, formatPaymentLog } from "../shared/x402";
 
 // ---------------------------------------------------------------------------
 // Interfaces — aligned with AI_AGENTS.md §4.3
@@ -147,6 +148,73 @@ const FRAMEWORK_MAP: Record<string, number> = {
   ESG: 3,
   MiCA: 4,
   CUSTOM: 5,
+};
+
+// ---------------------------------------------------------------------------
+// x402 Payment Submission Helper
+// ---------------------------------------------------------------------------
+
+const submitPaymentReport = (
+  runtime: Runtime<Config>,
+  evmClient: EVMClient,
+  agentId: `0x${string}`,
+  amount: bigint,
+  label: string,
+) => {
+  const { consumerAddress, operatorAddress, gasLimit } = runtime.config;
+
+  const payment = generatePaymentAuthorization(
+    runtime,
+    agentId,
+    operatorAddress,
+    amount,
+  );
+
+  // Encode AuthorizePayment for RaizoConsumer
+  const mockSignature = stringToHex("x402-demo-signature") as `0x${string}`;
+
+  const paymentData = encodeAbiParameters(
+    parseAbiParameters(
+      "bytes32 agentId, address to, uint256 amount, uint256 validAfter, uint256 validBefore, bytes32 nonce, bytes signature",
+    ),
+    [
+      payment.agentId,
+      payment.to,
+      payment.amount,
+      payment.validAfter,
+      payment.validBefore,
+      payment.nonce,
+      mockSignature,
+    ],
+  );
+
+  // Wrap with report type tag: (uint8 reportType=2, bytes data)
+  const consumerPayload = encodeAbiParameters(
+    parseAbiParameters("uint8 reportType, bytes data"),
+    [2, paymentData],
+  );
+
+  runtime.log(`${formatPaymentLog(payment)} [${label}]`);
+
+  const reportResponse = runtime
+    .report({
+      encodedPayload: hexToBase64(consumerPayload),
+      encoderName: "evm",
+      signingAlgo: "ecdsa",
+      hashingAlgo: "keccak256",
+    })
+    .result();
+
+  const writeResult = evmClient
+    .writeReport(runtime, {
+      receiver: consumerAddress,
+      report: reportResponse,
+      gasConfig: { gasLimit },
+    })
+    .result();
+
+  const txHash = bytesToHex(writeResult.txHash || new Uint8Array(32));
+  runtime.log(`[x402] Settlement TX: ${txHash}`);
 };
 
 // ---------------------------------------------------------------------------
@@ -436,6 +504,15 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
   const periodStart = nowSec - 86400;
 
   // --- Step 2: Generate compliance report via LLM ---
+  // x402: Authorize and submit compute payment (10 Mock USDC)
+  submitPaymentReport(
+    runtime,
+    evmClient,
+    agentId as `0x${string}`,
+    10_000_000n,
+    "Compliance Audit",
+  );
+
   const report = runtime
     .runInNodeMode(
       generateComplianceReport,
@@ -478,6 +555,15 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
   );
 
   runtime.log(`[Anchor] Hash: ${reportHash}, URI: ${reportURI}`);
+
+  // x402: Authorize and submit transaction subsidy (5 Mock USDC)
+  submitPaymentReport(
+    runtime,
+    evmClient,
+    agentId as `0x${string}`,
+    5_000_000n,
+    "Anchor Subsidy",
+  );
 
   // Generate signed report and write via consumer
   const reportResponse = runtime

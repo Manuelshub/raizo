@@ -26,6 +26,7 @@ import {
   stringToHex,
   zeroAddress,
 } from "viem";
+import { generatePaymentAuthorization, formatPaymentLog } from "../shared/x402";
 
 // ---------------------------------------------------------------------------
 // Interfaces — aligned with AI_AGENTS.md §3.2 (MVP subset)
@@ -160,6 +161,75 @@ const mapSeverity = (risk: number): number => {
   if (risk >= 0.85) return 2; // HIGH
   if (risk >= 0.7) return 1; // MEDIUM
   return 0; // LOW
+};
+
+// ---------------------------------------------------------------------------
+// x402 Payment Submission Helper
+// ---------------------------------------------------------------------------
+
+const submitPaymentReport = (
+  runtime: Runtime<Config>,
+  evmClient: EVMClient,
+  agentId: `0x${string}`,
+  amount: bigint,
+  label: string,
+) => {
+  const { consumerAddress, operatorAddress, gasLimit } = runtime.config;
+
+  const payment = generatePaymentAuthorization(
+    runtime,
+    agentId,
+    operatorAddress,
+    amount,
+  );
+
+  // Encode AuthorizePayment for RaizoConsumer
+  // (bytes32 agentId, address to, uint256 amount, uint256 validAfter, uint256 validBefore, bytes32 nonce, bytes signature)
+  // Mock signature for demo simulation
+  const mockSignature = stringToHex("x402-demo-signature") as `0x${string}`;
+
+  const paymentData = encodeAbiParameters(
+    parseAbiParameters(
+      "bytes32 agentId, address to, uint256 amount, uint256 validAfter, uint256 validBefore, bytes32 nonce, bytes signature",
+    ),
+    [
+      payment.agentId,
+      payment.to,
+      payment.amount,
+      payment.validAfter,
+      payment.validBefore,
+      payment.nonce,
+      mockSignature,
+    ],
+  );
+
+  // Wrap with report type tag: (uint8 reportType=2, bytes data)
+  const consumerPayload = encodeAbiParameters(
+    parseAbiParameters("uint8 reportType, bytes data"),
+    [2, paymentData],
+  );
+
+  runtime.log(`${formatPaymentLog(payment)} [${label}]`);
+
+  const reportResponse = runtime
+    .report({
+      encodedPayload: hexToBase64(consumerPayload),
+      encoderName: "evm",
+      signingAlgo: "ecdsa",
+      hashingAlgo: "keccak256",
+    })
+    .result();
+
+  const writeResult = evmClient
+    .writeReport(runtime, {
+      receiver: consumerAddress,
+      report: reportResponse,
+      gasConfig: { gasLimit },
+    })
+    .result();
+
+  const txHash = bytesToHex(writeResult.txHash || new Uint8Array(32));
+  runtime.log(`[x402] Settlement TX: ${txHash}`);
 };
 
 // ---------------------------------------------------------------------------
@@ -487,6 +557,15 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
     );
 
     // --- Step 3: LLM analysis via runInNodeMode (DON consensus) ---
+    // x402: Authorize and submit compute payment (5 Mock USDC)
+    submitPaymentReport(
+      runtime,
+      evmClient,
+      keccak256(stringToHex("raizo-threat-sentinel-v1")),
+      5_000_000n,
+      "AI Compute",
+    );
+
     const assessment = runtime
       .runInNodeMode(
         analyzeProtocol,
@@ -542,6 +621,15 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
 
       runtime.log(
         `[Action] Submitting report ${reportId}: ${assessment.recommendedAction}`,
+      );
+
+      // x402: Authorize and submit transaction subsidy (2 Mock USDC)
+      submitPaymentReport(
+        runtime,
+        evmClient,
+        keccak256(stringToHex("raizo-threat-sentinel-v1")),
+        2_000_000n,
+        "Gas Subsidy",
       );
 
       // Step 4a: Generate signed report via DON consensus
