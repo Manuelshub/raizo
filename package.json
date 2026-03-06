@@ -11,6 +11,7 @@
     "node": "hardhat node"
   },
   "devDependencies": {
+    "@chainlink/contracts-ccip": "^1.5.0",
     "@types/node": "^20.5.7",
     "@typescript-eslint/eslint-plugin": "^5.36.1",
     "@typescript-eslint/parser": "^5.36.1",

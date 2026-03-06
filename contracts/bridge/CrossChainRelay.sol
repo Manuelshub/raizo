@@ -13,14 +13,19 @@ import {
 import {
     AccessControlUpgradeable
 } from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
-import {Client} from "@chainlink/contracts-ccip/contracts/libraries/Client.sol";
-import {IRouterClient} from "@chainlink/contracts-ccip/contracts/interfaces/IRouterClient.sol";
-import {IAny2EVMMessageReceiver} from "@chainlink/contracts-ccip/contracts/interfaces/IAny2EVMMessageReceiver.sol";
+import {
+    Client
+} from "@chainlink/contracts-ccip/src/v0.8/ccip/libraries/Client.sol";
+import {
+    IRouterClient
+} from "@chainlink/contracts-ccip/src/v0.8/ccip/interfaces/IRouterClient.sol";
+import {
+    IAny2EVMMessageReceiver
+} from "@chainlink/contracts-ccip/src/v0.8/ccip/interfaces/IAny2EVMMessageReceiver.sol";
 
 /**
  * @title CrossChainRelay
- * @notice CCIP-aware relay for cross-chain alert propagation and protective actions.
- * @dev Uses real Chainlink CCIP Router for cross-chain messaging.
+ * @notice Production-grade CCIP implementation for Raizo cross-chain alerts.
  */
 contract CrossChainRelay is
     ICrossChainRelay,
@@ -89,7 +94,7 @@ contract CrossChainRelay is
             }
         }
 
-        // Use default values if report not found (e.g. specialized ALERT only)
+        // Failsafe: if report not stored, construct minimal report (e.g. for ALERT type)
         if (!found) {
             report.agentId = bytes32(0);
             report.severity = ISentinelActions.Severity.LOW;
@@ -102,7 +107,7 @@ contract CrossChainRelay is
                 messageType: ICrossChainRelay.MessageType.ACTION_EXECUTE,
                 reportId: reportId,
                 agentId: report.agentId,
-                sourceChainSelector: uint64(block.chainid), // Simplified for mock
+                sourceChainSelector: uint64(block.chainid),
                 destChainSelector: destChainSelector,
                 targetProtocol: targetProtocol,
                 actionType: actionType,
@@ -116,11 +121,13 @@ contract CrossChainRelay is
         bytes memory data = abi.encode(msgData);
 
         Client.EVM2AnyMessage memory evm2AnyMessage = Client.EVM2AnyMessage({
-            receiver: abi.encode(address(this)), // Assuming Spoke has relay at same address or whitelisted
+            receiver: abi.encode(address(this)), // Expected at same address on destination
             data: data,
             tokenAmounts: new Client.EVMTokenAmount[](0),
-            extraArgs: "",
-            feeToken: address(0) // Native payment for now
+            extraArgs: Client._argsToBytes(
+                Client.EVMExtraArgsV1({gasLimit: 300_000})
+            ),
+            feeToken: address(0) // Native payment (ETH/GAS)
         });
 
         uint256 fee = router.getFee(destChainSelector, evm2AnyMessage);
@@ -132,12 +139,18 @@ contract CrossChainRelay is
         emit AlertSent(messageId, destChainSelector, reportId);
     }
 
+    error UnauthorizedRouter(address caller, address expected);
+
     /**
      * @inheritdoc IAny2EVMMessageReceiver
      */
     function ccipReceive(
         Client.Any2EVMMessage calldata message
     ) external override {
+        // 1. Validate Caller (Must be Router)
+        if (msg.sender != address(router)) {
+            revert UnauthorizedRouter(msg.sender, address(router));
+        }
         // 1. Validate Source
         if (!_whitelistedSourceChains[message.sourceChainSelector]) {
             revert UnauthorizedSourceChain(message.sourceChainSelector);

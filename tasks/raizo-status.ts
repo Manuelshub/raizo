@@ -75,32 +75,35 @@ task("raizo-status", "Prints the current status of all registered protocols")
 
       let isPaused = false;
       let activeActions = [];
+      let relayAddress = "0x0";
       try {
         isPaused = await sentinel.isProtocolPaused(p.protocolAddress);
         activeActions = await sentinel.getActiveActions(p.protocolAddress);
+        relayAddress = await sentinel.relay();
       } catch (e: any) {
-        console.warn(
-          `Failed to fetch Sentinel data for ${p.protocolAddress}: ${e.message}`,
-        );
+        // Silently fail if relay() is not yet implemented or accessible
+      }
+
+      let destSelector = 0n;
+      try {
+        destSelector = await core.getRelayChain(p.chainId);
+      } catch (e: any) {
+        // Core might be older version without getRelayChain
       }
 
       let latestReport = null;
       try {
         // Try getting reports for the protocol's chain
-        console.log(`Fetching reports for chain ${p.chainId} from vault...`);
         let reports = await vault.getReportsByChain(p.chainId);
 
-        // If empty and p.chainId is 1, try probing for Sepolia explicitly if we expect reports there
+        // If empty and p.chainId is 1, try probing for Sepolia explicitly
         if (reports.length === 0 && p.chainId === 1n) {
-          console.log("No reports for chain 1. Probing chain 11155111...");
           reports = await vault.getReportsByChain(11155111);
         }
 
         latestReport = reports.length > 0 ? reports[reports.length - 1] : null;
       } catch (e: any) {
-        console.warn(
-          `Failed to fetch Vault data for chain ${p.chainId}: ${e.message}`,
-        );
+        // Vault error
       }
 
       tableData.push({
@@ -109,10 +112,13 @@ task("raizo-status", "Prints the current status of all registered protocols")
         Tier: p.riskTier.toString(),
         Status: isPaused ? "⚠️ PAUSED" : "✅ ACTIVE",
         Threats: activeActions.length.toString(),
-        LatestCompliance: latestReport
-          ? new Date(Number(latestReport.timestamp) * 1000).toLocaleString()
-          : "N/A",
-        Score: latestReport ? "Analyzed" : "N/A",
+        "Cross-Chain":
+          destSelector !== 0n ? `Mapped (${destSelector})` : "Local Only",
+        Relay:
+          relayAddress !== "0x0000000000000000000000000000000000000000"
+            ? "Configured"
+            : "None",
+        Compliance: latestReport ? "Anchored" : "Pending",
       });
     }
 

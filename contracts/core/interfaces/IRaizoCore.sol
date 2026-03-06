@@ -74,7 +74,8 @@ interface IRaizoCore {
     function registerAgent(
         bytes32 agentId,
         address paymentWallet,
-        uint256 dailyBudget
+        uint256 dailyBudget,
+        uint256 actionBudget
     ) external;
 
     function deregisterAgent(bytes32 agentId) external;
@@ -82,6 +83,8 @@ interface IRaizoCore {
     function getAgent(
         bytes32 agentId
     ) external view returns (AgentConfig memory);
+
+    function setActionBudget(bytes32 agentId, uint256 budget) external;
 
     // ─── Configuration ───
     function setConfidenceThreshold(uint16 threshold) external; // basis points (e.g., 8500 = 85%)
@@ -95,8 +98,13 @@ interface IRaizoCore {
     // ─── Relay Chain Mapping ───
     function setRelayChain(
         uint32 sourceChainId,
-        uint64 destChainSelector
+        uint64 destChainSelector,
+        address relayAddress
     ) external;
 
     function getRelayChain(uint32 sourceChainId) external view returns (uint64);
+
+    function getRelayAddress(
+        uint32 sourceChainId
+    ) external view returns (address);
 }

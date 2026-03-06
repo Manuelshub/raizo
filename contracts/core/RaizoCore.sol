@@ -26,6 +26,7 @@ contract RaizoCore is
     address[] private _protocolList;
     mapping(bytes32 => AgentConfig) private _agents;
     mapping(uint32 => uint64) private _relayChains;
+    mapping(uint32 => address) private _relayAddresses;
     uint16 private _confidenceThreshold;
     uint256 private _epochDuration;
 
@@ -160,7 +161,8 @@ contract RaizoCore is
     function registerAgent(
         bytes32 agentId,
         address paymentWallet,
-        uint256 dailyBudget
+        uint256 dailyBudget,
+        uint256 actionBudget
     ) external override onlyRole(DEFAULT_ADMIN_ROLE) {
         if (paymentWallet == address(0)) revert ZeroAddress();
         if (_agents[agentId].isActive) revert AgentAlreadyRegistered(agentId);
@@ -169,7 +171,7 @@ contract RaizoCore is
             agentId: agentId,
             paymentWallet: paymentWallet,
             dailyBudgetUSDC: dailyBudget,
-            actionBudgetPerEpoch: 10, // Default value as not in registerAgent params
+            actionBudgetPerEpoch: actionBudget,
             isActive: true
         });
         emit AgentRegistered(agentId, paymentWallet);
@@ -219,16 +221,33 @@ contract RaizoCore is
     }
 
     /**
-     * @notice Maps a source chain ID to a CCIP destination chain selector for relaying alerts.
+     * @notice Updates the action budget for a specific agent.
+     * @param agentId Unique CRE workflow identifier.
+     * @param budget New maximum protective actions per epoch.
+     */
+    function setActionBudget(
+        bytes32 agentId,
+        uint256 budget
+    ) external override onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (!_agents[agentId].isActive) revert AgentNotRegistered(agentId);
+        _agents[agentId].actionBudgetPerEpoch = budget;
+        emit ConfigUpdated("agentActionBudget", budget);
+    }
+
+    /**
+     * @notice Maps a source chain ID to a CCIP destination chain selector and relay address.
      * @param sourceChainId The chain ID of the protocol being monitored.
      * @param destChainSelector The CCIP selector for the relay destination.
+     * @param relayAddress The address of the CrossChainRelay on the target chain.
      */
     function setRelayChain(
         uint32 sourceChainId,
-        uint64 destChainSelector
+        uint64 destChainSelector,
+        address relayAddress
     ) external override onlyRole(DEFAULT_ADMIN_ROLE) {
         _relayChains[sourceChainId] = destChainSelector;
-        emit ConfigUpdated("relayChain", uint256(destChainSelector));
+        _relayAddresses[sourceChainId] = relayAddress;
+        emit RelayChainSet(destChainSelector, relayAddress);
     }
 
     /**
@@ -254,5 +273,14 @@ contract RaizoCore is
         return _relayChains[sourceChainId];
     }
 
-    uint256[50] private __gap;
+    /**
+     * @inheritdoc IRaizoCore
+     */
+    function getRelayAddress(
+        uint32 sourceChainId
+    ) external view override returns (address) {
+        return _relayAddresses[sourceChainId];
+    }
+
+    uint256[49] private __gap;
 }

@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.23;
 
-import {Client} from "@chainlink/contracts-ccip/contracts/libraries/Client.sol";
-import {IRouterClient} from "@chainlink/contracts-ccip/contracts/interfaces/IRouterClient.sol";
-import {IAny2EVMMessageReceiver} from "@chainlink/contracts-ccip/contracts/interfaces/IAny2EVMMessageReceiver.sol";
+import {
+    Client
+} from "@chainlink/contracts-ccip/src/v0.8/ccip/libraries/Client.sol";
+import {
+    IRouterClient
+} from "@chainlink/contracts-ccip/src/v0.8/ccip/interfaces/IRouterClient.sol";
+import {
+    IAny2EVMMessageReceiver
+} from "@chainlink/contracts-ccip/src/v0.8/ccip/interfaces/IAny2EVMMessageReceiver.sol";
 
 /**
  * @title MockCCIPRouter
