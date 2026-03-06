@@ -1,0 +1,12 @@
+{
+  "schedule": "0 */6 * * *",
+  "rpId": "rp_aa1cd1f82b8d58fa",
+  "appId": "app_f50f0c294fd5aef73d093bc24c44c01c",
+  "consumerAddress": "0x0000000000000000000000000000000000000000",
+  "governanceGateAddress": "0x0000000000000000000000000000000000000000",
+  "chainName": "ethereum-testnet-sepolia",
+  "chainId": 11155111,
+  "isTestnet": true,
+  "gasLimit": "500000",
+  "worldIdApiUrl": "https://developer.world.org/api/v4/verify"
+}

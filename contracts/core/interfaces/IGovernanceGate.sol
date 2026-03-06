@@ -25,11 +25,12 @@ interface IGovernanceGate {
     error ProposalNotPassed(uint256 proposalId);
     error DoubleVoting(uint256 nullifierHash);
     error InvalidProof();
+    error GovernanceNotConfigured();
 
-    // ─── Actions ───
+    // ─── Actions (Direct On-Chain Verification) ───
 
     /**
-     * @notice Submit a proposal (requires World ID verification)
+     * @notice Submit a proposal (requires on-chain World ID verification).
      * @param descriptionHash Hash of the proposal text/details.
      * @param root World ID Merkle root.
      * @param nullifierHash Prevents double-voting/proposing.
@@ -44,7 +45,7 @@ interface IGovernanceGate {
     ) external returns (uint256 proposalId);
 
     /**
-     * @notice Cast a vote (requires World ID verification)
+     * @notice Cast a vote (requires on-chain World ID verification).
      * @param proposalId The ID of the proposal to vote on.
      * @param support Whether to support (true) or oppose (false) the proposal.
      * @param root World ID Merkle root.
@@ -59,8 +60,41 @@ interface IGovernanceGate {
         uint256[8] calldata proof
     ) external;
 
+    // ─── Actions (CRE DON-Attested — Off-Chain Verification) ───
+
     /**
-     * @notice Execute a passed proposal
+     * @notice Submit a proposal with a DON-attested World ID proof.
+     * @dev Called by RaizoConsumer after the CRE workflow verified the proof
+     *      off-chain via World ID API. Requires ATTESTER_ROLE.
+     * @param descriptionHash Hash of the proposal text/details.
+     * @param nullifierHash Prevents double-proposing (sybil resistance).
+     * @param proposer The address of the human who submitted the proof.
+     * @return proposalId Unique identifier for the proposal.
+     */
+    function proposeAttested(
+        bytes32 descriptionHash,
+        uint256 nullifierHash,
+        address proposer
+    ) external returns (uint256 proposalId);
+
+    /**
+     * @notice Cast a vote with a DON-attested World ID proof.
+     * @dev Called by RaizoConsumer after the CRE workflow verified the proof
+     *      off-chain via World ID API. Requires ATTESTER_ROLE.
+     * @param proposalId The ID of the proposal to vote on.
+     * @param support Whether to support (true) or oppose (false) the proposal.
+     * @param nullifierHash Prevents double-voting (sybil resistance).
+     * @param voter The address of the human who submitted the proof.
+     */
+    function voteAttested(
+        uint256 proposalId,
+        bool support,
+        uint256 nullifierHash,
+        address voter
+    ) external;
+
+    /**
+     * @notice Execute a passed proposal.
      * @param proposalId The ID of the proposal to execute.
      */
     function execute(uint256 proposalId) external;

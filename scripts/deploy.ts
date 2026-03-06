@@ -24,12 +24,12 @@ const TESTNET_ADDRESSES: Record<
   { worldId: string; usdc: string; ccipRouter: string }
 > = {
   sepolia: {
-    worldId: "0x0000000000000000000000000000000000000000", // Placeholder — no World ID on Sepolia
+    worldId: "0x469449f251692e0779667583026b5a1e99512157", // World ID Router on Sepolia
     usdc: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", // Circle USDC on Sepolia
     ccipRouter: "0x0BF3dE8c5D3e8A2B34D2BEeB17ABfCeBaf363A59", // Chainlink CCIP Router Sepolia
   },
   baseSepolia: {
-    worldId: "0x0000000000000000000000000000000000000000",
+    worldId: "0x42FF98C4E85212a5D31358ACbFe76a621b50fC02", // World ID Router on Base Sepolia
     usdc: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", // Circle USDC on Base Sepolia
     ccipRouter: "0xD3b06cEbF099CE7DA4AcCf578aaebFDBd6e88a93", // Chainlink CCIP Router Base Sepolia
   },
@@ -142,10 +142,17 @@ async function main() {
     deployed.SentinelActions,
     deployed.ComplianceVault,
     deployed.PaymentEscrow,
+    deployed.GovernanceGate,
   );
   await raizoConsumer.waitForDeployment();
   deployed.RaizoConsumer = await raizoConsumer.getAddress();
   console.log(`         RaizoConsumer: ${deployed.RaizoConsumer}`);
+
+  // --- Grant Roles ---
+  console.log("\nGranting ATTESTER_ROLE to RaizoConsumer on GovernanceGate...");
+  const ATTESTER_ROLE = ethers.keccak256(ethers.toUtf8Bytes("ATTESTER_ROLE"));
+  await governanceGate.grantRole(ATTESTER_ROLE, deployed.RaizoConsumer);
+  console.log("   ATTESTER_ROLE granted.");
 
   // --- Write Output ---
   const output = {

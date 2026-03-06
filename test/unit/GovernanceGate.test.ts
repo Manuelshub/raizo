@@ -147,4 +147,137 @@ describe("GovernanceGate (TDD Red Phase)", function () {
         .withArgs(1);
     });
   });
+
+  describe("DON-Attested Governance (CRE World ID Bridge)", function () {
+    let attester: SignerWithAddress;
+    const ATTESTER_ROLE = ethers.keccak256(ethers.toUtf8Bytes("ATTESTER_ROLE"));
+    const ATTESTED_NULLIFIER = 777777;
+    const ATTESTED_DESC = ethers.id("Enable enhanced monitoring for Aave v3");
+
+    beforeEach(async function () {
+      [, , , attester] = await ethers.getSigners();
+      await govGate.grantRole(ATTESTER_ROLE, attester.address);
+    });
+
+    it("should create a proposal via proposeAttested (ATTESTER_ROLE)", async function () {
+      await expect(
+        govGate
+          .connect(attester)
+          .proposeAttested(ATTESTED_DESC, ATTESTED_NULLIFIER, proposer.address),
+      )
+        .to.emit(govGate, "ProposalCreated")
+        .withArgs(0, proposer.address, ATTESTED_DESC);
+
+      const proposal = await govGate.getProposal(0);
+      expect(proposal.proposer).to.equal(proposer.address);
+    });
+
+    it("should cast a vote via voteAttested (ATTESTER_ROLE)", async function () {
+      await govGate
+        .connect(attester)
+        .proposeAttested(ATTESTED_DESC, ATTESTED_NULLIFIER, proposer.address);
+
+      const voteNullifier = 888888;
+      await expect(
+        govGate
+          .connect(attester)
+          .voteAttested(0, true, voteNullifier, voter.address),
+      )
+        .to.emit(govGate, "VoteCast")
+        .withArgs(0, voter.address, true);
+
+      const proposal = await govGate.getProposal(0);
+      expect(proposal.forVotes).to.equal(1);
+    });
+
+    it("should reject attested proposal with reused nullifier (sybil resistance)", async function () {
+      await govGate
+        .connect(attester)
+        .proposeAttested(ATTESTED_DESC, ATTESTED_NULLIFIER, proposer.address);
+
+      await expect(
+        govGate
+          .connect(attester)
+          .proposeAttested(
+            ethers.id("Duplicate"),
+            ATTESTED_NULLIFIER,
+            voter.address,
+          ),
+      )
+        .to.be.revertedWithCustomError(govGate, "DoubleVoting")
+        .withArgs(ATTESTED_NULLIFIER);
+    });
+
+    it("should reject attested vote with reused nullifier (sybil resistance)", async function () {
+      await govGate
+        .connect(attester)
+        .proposeAttested(ATTESTED_DESC, ATTESTED_NULLIFIER, proposer.address);
+
+      const voteNullifier = 999999;
+      await govGate
+        .connect(attester)
+        .voteAttested(0, true, voteNullifier, voter.address);
+
+      await expect(
+        govGate
+          .connect(attester)
+          .voteAttested(0, false, voteNullifier, proposer.address),
+      )
+        .to.be.revertedWithCustomError(govGate, "DoubleVoting")
+        .withArgs(voteNullifier);
+    });
+
+    it("should reject proposeAttested from non-ATTESTER_ROLE", async function () {
+      await expect(
+        govGate
+          .connect(proposer)
+          .proposeAttested(ATTESTED_DESC, 12345, proposer.address),
+      ).to.be.reverted;
+    });
+
+    it("should reject voteAttested from non-ATTESTER_ROLE", async function () {
+      // First create a proposal via attester
+      await govGate
+        .connect(attester)
+        .proposeAttested(ATTESTED_DESC, ATTESTED_NULLIFIER, proposer.address);
+
+      await expect(
+        govGate.connect(voter).voteAttested(0, true, 54321, voter.address),
+      ).to.be.reverted;
+    });
+
+    it("should share nullifier space between direct and attested paths", async function () {
+      // Use a nullifier via direct path
+      await govGate
+        .connect(proposer)
+        .propose(DESCRIPTION_HASH, ROOT, NULLIFIER_HASH, PROOF);
+
+      // Attempt to reuse same nullifier via attested path
+      await expect(
+        govGate
+          .connect(attester)
+          .proposeAttested(ATTESTED_DESC, NULLIFIER_HASH, voter.address),
+      )
+        .to.be.revertedWithCustomError(govGate, "DoubleVoting")
+        .withArgs(NULLIFIER_HASH);
+    });
+
+    it("should allow attested proposal to be executed after voting", async function () {
+      await govGate
+        .connect(attester)
+        .proposeAttested(ATTESTED_DESC, ATTESTED_NULLIFIER, proposer.address);
+      await govGate
+        .connect(attester)
+        .voteAttested(0, true, 888888, voter.address);
+
+      for (let i = 0; i < 7201; i++) await ethers.provider.send("evm_mine", []);
+
+      await expect(govGate.execute(0))
+        .to.emit(govGate, "ProposalExecuted")
+        .withArgs(0);
+
+      const proposal = await govGate.getProposal(0);
+      expect(proposal.executed).to.be.true;
+    });
+  });
 });

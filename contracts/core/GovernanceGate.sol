@@ -18,6 +18,9 @@ contract GovernanceGate is
     AccessControlUpgradeable,
     UUPSUpgradeable
 {
+    /// @notice Role for CRE DON-attested governance actions (e.g., RaizoConsumer).
+    bytes32 public constant ATTESTER_ROLE = keccak256("ATTESTER_ROLE");
+
     IWorldID public worldId;
     uint256 public proposalCount;
 
@@ -47,11 +50,10 @@ contract GovernanceGate is
         address newImplementation
     ) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
+    // ─── Direct On-Chain Verification ───────────────────────────────────
+
     /**
-     * @notice Submit a proposal (requires World ID verification).
-     * @dev Verification signal is the proposer's address. Proposing prevents
-     *      further proposals/votes from the same person on the SAME proposal scope
-     *      if nullifiers are reused improperly.
+     * @notice Submit a proposal (requires on-chain World ID verification).
      * @param descriptionHash Hash of the proposal text/details.
      * @param root World ID Merkle root.
      * @param nullifierHash Prevents double-voting/proposing.
@@ -66,7 +68,6 @@ contract GovernanceGate is
     ) external override returns (uint256 proposalId) {
         if (_nullifierHashes[nullifierHash]) revert DoubleVoting(nullifierHash);
 
-        // Verification signal is the proposer's address
         worldId.verifyProof(
             root,
             1, // groupId
@@ -78,24 +79,11 @@ contract GovernanceGate is
 
         _nullifierHashes[nullifierHash] = true;
 
-        proposalId = proposalCount++;
-        _proposals[proposalId] = Proposal({
-            proposalId: proposalId,
-            descriptionHash: descriptionHash,
-            proposer: msg.sender,
-            forVotes: 0,
-            againstVotes: 0,
-            startBlock: block.number,
-            endBlock: block.number + 7200, // ~1 day
-            executed: false
-        });
-
-        emit ProposalCreated(proposalId, msg.sender, descriptionHash);
+        proposalId = _createProposal(descriptionHash, msg.sender);
     }
 
     /**
-     * @notice Cast a vote (requires World ID verification).
-     * @dev Nullifier is tracked per individual human to prevent double voting.
+     * @notice Cast a vote (requires on-chain World ID verification).
      * @param proposalId The ID of the proposal to vote on.
      * @param support Whether to support (true) or oppose (false) the proposal.
      * @param root World ID Merkle root.
@@ -109,13 +97,8 @@ contract GovernanceGate is
         uint256 nullifierHash,
         uint256[8] calldata proof
     ) external override {
-        Proposal storage proposal = _proposals[proposalId];
-        if (block.number > proposal.endBlock)
-            revert ProposalExpired(proposalId);
-        if (proposal.executed) revert ProposalAlreadyExecuted(proposalId);
-        if (_nullifierHashes[nullifierHash]) revert DoubleVoting(nullifierHash);
+        _validateVotePreConditions(proposalId, nullifierHash);
 
-        // Action ID scoping for voting prevents double-voting across proposals
         worldId.verifyProof(
             root,
             1,
@@ -128,19 +111,59 @@ contract GovernanceGate is
         );
 
         _nullifierHashes[nullifierHash] = true;
+        _castVote(proposalId, support, msg.sender);
+    }
 
-        if (support) {
-            proposal.forVotes++;
-        } else {
-            proposal.againstVotes++;
-        }
+    // ─── CRE DON-Attested (Off-Chain Verification) ─────────────────────
 
-        emit VoteCast(proposalId, msg.sender, support);
+    /**
+     * @notice Submit a proposal with a DON-attested World ID proof.
+     * @dev The CRE workflow verified the proof off-chain via World ID API.
+     *      DON 2/3 consensus + KeystoneForwarder signature provides the
+     *      trust anchor. Nullifier uniqueness is enforced on-chain.
+     * @param descriptionHash Hash of the proposal text/details.
+     * @param nullifierHash Prevents double-proposing (sybil resistance).
+     * @param proposer The address of the human who submitted the proof.
+     * @return proposalId Unique identifier for the proposal.
+     */
+    function proposeAttested(
+        bytes32 descriptionHash,
+        uint256 nullifierHash,
+        address proposer
+    ) external override onlyRole(ATTESTER_ROLE) returns (uint256 proposalId) {
+        if (_nullifierHashes[nullifierHash]) revert DoubleVoting(nullifierHash);
+
+        _nullifierHashes[nullifierHash] = true;
+
+        proposalId = _createProposal(descriptionHash, proposer);
     }
 
     /**
+     * @notice Cast a vote with a DON-attested World ID proof.
+     * @dev The CRE workflow verified the proof off-chain via World ID API.
+     *      DON 2/3 consensus + KeystoneForwarder signature provides the
+     *      trust anchor. Nullifier uniqueness is enforced on-chain.
+     * @param proposalId The ID of the proposal to vote on.
+     * @param support Whether to support (true) or oppose (false) the proposal.
+     * @param nullifierHash Prevents double-voting (sybil resistance).
+     * @param voter The address of the human who submitted the proof.
+     */
+    function voteAttested(
+        uint256 proposalId,
+        bool support,
+        uint256 nullifierHash,
+        address voter
+    ) external override onlyRole(ATTESTER_ROLE) {
+        _validateVotePreConditions(proposalId, nullifierHash);
+
+        _nullifierHashes[nullifierHash] = true;
+        _castVote(proposalId, support, voter);
+    }
+
+    // ─── Shared Logic ───────────────────────────────────────────────────
+
+    /**
      * @notice Execute a passed proposal.
-     * @dev Reverts if proposal is active, executed, or failed.
      * @param proposalId The ID of the proposal to execute.
      */
     function execute(uint256 proposalId) external override {
@@ -155,13 +178,67 @@ contract GovernanceGate is
         emit ProposalExecuted(proposalId);
     }
 
-    /**
-     * @inheritdoc IGovernanceGate
-     */
+    /// @inheritdoc IGovernanceGate
     function getProposal(
         uint256 proposalId
     ) external view override returns (Proposal memory) {
         return _proposals[proposalId];
+    }
+
+    // ─── Internal Helpers ───────────────────────────────────────────────
+
+    /**
+     * @dev Creates a new proposal and emits the ProposalCreated event.
+     */
+    function _createProposal(
+        bytes32 descriptionHash,
+        address proposer
+    ) internal returns (uint256 proposalId) {
+        proposalId = proposalCount++;
+        _proposals[proposalId] = Proposal({
+            proposalId: proposalId,
+            descriptionHash: descriptionHash,
+            proposer: proposer,
+            forVotes: 0,
+            againstVotes: 0,
+            startBlock: block.number,
+            endBlock: block.number + 7200, // ~1 day
+            executed: false
+        });
+
+        emit ProposalCreated(proposalId, proposer, descriptionHash);
+    }
+
+    /**
+     * @dev Validates vote pre-conditions: active, not executed, no double-vote.
+     */
+    function _validateVotePreConditions(
+        uint256 proposalId,
+        uint256 nullifierHash
+    ) internal view {
+        Proposal storage proposal = _proposals[proposalId];
+        if (block.number > proposal.endBlock)
+            revert ProposalExpired(proposalId);
+        if (proposal.executed) revert ProposalAlreadyExecuted(proposalId);
+        if (_nullifierHashes[nullifierHash]) revert DoubleVoting(nullifierHash);
+    }
+
+    /**
+     * @dev Records a vote and emits the VoteCast event.
+     */
+    function _castVote(
+        uint256 proposalId,
+        bool support,
+        address voter
+    ) internal {
+        Proposal storage proposal = _proposals[proposalId];
+        if (support) {
+            proposal.forVotes++;
+        } else {
+            proposal.againstVotes++;
+        }
+
+        emit VoteCast(proposalId, voter, support);
     }
 
     uint256[50] private __gap;

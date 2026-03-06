@@ -5,6 +5,7 @@ import {ReceiverTemplate} from "../cre/ReceiverTemplate.sol";
 import {ISentinelActions} from "./interfaces/ISentinelActions.sol";
 import {IComplianceVault} from "./interfaces/IComplianceVault.sol";
 import {IPaymentEscrow} from "./interfaces/IPaymentEscrow.sol";
+import {IGovernanceGate} from "./interfaces/IGovernanceGate.sol";
 
 /**
  * @title RaizoConsumer
@@ -16,21 +17,26 @@ import {IPaymentEscrow} from "./interfaces/IPaymentEscrow.sol";
  *      Report types:
  *        0 = Threat report → SentinelActions.executeAction(ThreatReport)
  *        1 = Compliance anchor → ComplianceVault.storeReport(...)
+ *        2 = Payment authorization → PaymentEscrow.authorizePayment(...)
+ *        3 = Governance action → GovernanceGate.proposeAttested/voteAttested
  */
 contract RaizoConsumer is ReceiverTemplate {
     /// @notice Report type identifiers.
     uint8 public constant REPORT_TYPE_THREAT = 0;
     uint8 public constant REPORT_TYPE_COMPLIANCE = 1;
     uint8 public constant REPORT_TYPE_PAYMENT = 2;
+    uint8 public constant REPORT_TYPE_GOVERNANCE = 3;
 
     ISentinelActions public sentinel;
     IComplianceVault public vault;
     IPaymentEscrow public escrow;
+    IGovernanceGate public governanceGate;
 
     error InvalidReportType(uint8 reportType);
     error SentinelNotConfigured();
     error VaultNotConfigured();
     error EscrowNotConfigured();
+    error GovernanceGateNotConfigured();
 
     event ReportReceived(uint8 indexed reportType, bytes32 indexed sourceHash);
     event ThreatReportForwarded(
@@ -42,6 +48,10 @@ contract RaizoConsumer is ReceiverTemplate {
         bytes32 indexed agentId,
         bytes32 indexed nonce
     );
+    event GovernanceActionProcessed(
+        uint8 indexed actionType,
+        uint256 indexed nullifierHash
+    );
 
     /**
      * @param _forwarderAddress Chainlink KeystoneForwarder (or MockForwarder for simulation).
@@ -52,11 +62,13 @@ contract RaizoConsumer is ReceiverTemplate {
         address _forwarderAddress,
         address _sentinel,
         address _vault,
-        address _escrow
+        address _escrow,
+        address _governanceGate
     ) ReceiverTemplate(_forwarderAddress) {
         sentinel = ISentinelActions(_sentinel);
         vault = IComplianceVault(_vault);
         escrow = IPaymentEscrow(_escrow);
+        governanceGate = IGovernanceGate(_governanceGate);
     }
 
     /**
@@ -77,6 +89,8 @@ contract RaizoConsumer is ReceiverTemplate {
             _handleComplianceReport(data);
         } else if (reportType == REPORT_TYPE_PAYMENT) {
             _handlePaymentAuthorization(data);
+        } else if (reportType == REPORT_TYPE_GOVERNANCE) {
+            _handleGovernanceAction(data);
         } else {
             revert InvalidReportType(reportType);
         }
@@ -152,6 +166,41 @@ contract RaizoConsumer is ReceiverTemplate {
         emit PaymentAuthorizationProcessed(agentId, nonce);
     }
 
+    /**
+     * @dev Decodes governance action and forwards to GovernanceGate.
+     *      Action types: 0 = propose, 1 = vote.
+     */
+    function _handleGovernanceAction(bytes memory data) internal {
+        if (address(governanceGate) == address(0))
+            revert GovernanceGateNotConfigured();
+
+        (
+            uint8 actionType,
+            bytes32 descriptionHash,
+            uint256 proposalId,
+            bool support,
+            uint256 nullifierHash,
+            address actor
+        ) = abi.decode(data, (uint8, bytes32, uint256, bool, uint256, address));
+
+        if (actionType == 0) {
+            governanceGate.proposeAttested(
+                descriptionHash,
+                nullifierHash,
+                actor
+            );
+        } else {
+            governanceGate.voteAttested(
+                proposalId,
+                support,
+                nullifierHash,
+                actor
+            );
+        }
+
+        emit GovernanceActionProcessed(actionType, nullifierHash);
+    }
+
     /// @notice Update SentinelActions address. Owner-only.
     function setSentinel(address _sentinel) external onlyOwner {
         sentinel = ISentinelActions(_sentinel);
@@ -165,5 +214,10 @@ contract RaizoConsumer is ReceiverTemplate {
     /// @notice Update PaymentEscrow address. Owner-only.
     function setEscrow(address _escrow) external onlyOwner {
         escrow = IPaymentEscrow(_escrow);
+    }
+
+    /// @notice Update GovernanceGate address. Owner-only.
+    function setGovernanceGate(address _governanceGate) external onlyOwner {
+        governanceGate = IGovernanceGate(_governanceGate);
     }
 }
