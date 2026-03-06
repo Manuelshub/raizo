@@ -4,6 +4,7 @@ pragma solidity ^0.8.23;
 import {ReceiverTemplate} from "../cre/ReceiverTemplate.sol";
 import {ISentinelActions} from "./interfaces/ISentinelActions.sol";
 import {IComplianceVault} from "./interfaces/IComplianceVault.sol";
+import {IPaymentEscrow} from "./interfaces/IPaymentEscrow.sol";
 
 /**
  * @title RaizoConsumer
@@ -20,13 +21,16 @@ contract RaizoConsumer is ReceiverTemplate {
     /// @notice Report type identifiers.
     uint8 public constant REPORT_TYPE_THREAT = 0;
     uint8 public constant REPORT_TYPE_COMPLIANCE = 1;
+    uint8 public constant REPORT_TYPE_PAYMENT = 2;
 
     ISentinelActions public sentinel;
     IComplianceVault public vault;
+    IPaymentEscrow public escrow;
 
     error InvalidReportType(uint8 reportType);
     error SentinelNotConfigured();
     error VaultNotConfigured();
+    error EscrowNotConfigured();
 
     event ReportReceived(uint8 indexed reportType, bytes32 indexed sourceHash);
     event ThreatReportForwarded(
@@ -34,6 +38,10 @@ contract RaizoConsumer is ReceiverTemplate {
         address indexed protocol
     );
     event ComplianceReportAnchored(bytes32 indexed reportHash, uint32 chainId);
+    event PaymentAuthorizationProcessed(
+        bytes32 indexed agentId,
+        bytes32 indexed nonce
+    );
 
     /**
      * @param _forwarderAddress Chainlink KeystoneForwarder (or MockForwarder for simulation).
@@ -43,10 +51,12 @@ contract RaizoConsumer is ReceiverTemplate {
     constructor(
         address _forwarderAddress,
         address _sentinel,
-        address _vault
+        address _vault,
+        address _escrow
     ) ReceiverTemplate(_forwarderAddress) {
         sentinel = ISentinelActions(_sentinel);
         vault = IComplianceVault(_vault);
+        escrow = IPaymentEscrow(_escrow);
     }
 
     /**
@@ -65,6 +75,8 @@ contract RaizoConsumer is ReceiverTemplate {
             _handleThreatReport(data);
         } else if (reportType == REPORT_TYPE_COMPLIANCE) {
             _handleComplianceReport(data);
+        } else if (reportType == REPORT_TYPE_PAYMENT) {
+            _handlePaymentAuthorization(data);
         } else {
             revert InvalidReportType(reportType);
         }
@@ -108,6 +120,38 @@ contract RaizoConsumer is ReceiverTemplate {
         emit ComplianceReportAnchored(reportHash, chainId);
     }
 
+    /**
+     * @dev Decodes payment authorization and forwards to PaymentEscrow.authorizePayment.
+     */
+    function _handlePaymentAuthorization(bytes memory data) internal {
+        if (address(escrow) == address(0)) revert EscrowNotConfigured();
+
+        (
+            bytes32 agentId,
+            address to,
+            uint256 amount,
+            uint256 validAfter,
+            uint256 validBefore,
+            bytes32 nonce,
+            bytes memory signature
+        ) = abi.decode(
+                data,
+                (bytes32, address, uint256, uint256, uint256, bytes32, bytes)
+            );
+
+        escrow.authorizePayment(
+            agentId,
+            to,
+            amount,
+            validAfter,
+            validBefore,
+            nonce,
+            signature
+        );
+
+        emit PaymentAuthorizationProcessed(agentId, nonce);
+    }
+
     /// @notice Update SentinelActions address. Owner-only.
     function setSentinel(address _sentinel) external onlyOwner {
         sentinel = ISentinelActions(_sentinel);
@@ -116,5 +160,10 @@ contract RaizoConsumer is ReceiverTemplate {
     /// @notice Update ComplianceVault address. Owner-only.
     function setVault(address _vault) external onlyOwner {
         vault = IComplianceVault(_vault);
+    }
+
+    /// @notice Update PaymentEscrow address. Owner-only.
+    function setEscrow(address _escrow) external onlyOwner {
+        escrow = IPaymentEscrow(_escrow);
     }
 }
