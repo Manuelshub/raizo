@@ -1,8 +1,8 @@
 {
   "schedule": "*/12 * * * * *",
-  "sentinelActionsAddress": "0x7832c3Cdea8EAD7206BfE54e3B24679C2975d787",
-  "crossChainRelayAddress": "0x662FE88f6a797b5aa6A5BCd6d0b001fFE1E852eF",
-  "raizoCoreAddress": "0x85EC882f1cE7F310Ce6D12379B505d7589b34Ac3",
+  "sentinelActionsAddress": "0x6721e1C5D038880C64d2AEf073eF146f9Ae71C3e",
+  "crossChainRelayAddress": "0x385c98B6cD062326E165F00D197696561133A3d8",
+  "raizoCoreAddress": "0xc52009177331A66ee06d2cC11E51D885Fcb67cBe",
   "operatorAddress": "0xF89227c33F8Ef6f623ad9303e72cf8dc17f7643F",
   "chainName": "ethereum-testnet-sepolia",
   "chainId": 11155111,
