@@ -18,6 +18,15 @@ interface IGovernanceGate {
         bool executed;
     }
 
+    /// @notice Stores a user-submitted IDKit proof awaiting CRE off-chain verification.
+    struct PendingRequest {
+        address requester;
+        bytes32 descriptionHash;
+        bytes idkitResponse; // Raw IDKit JSON response (forwarded to World ID Verify API)
+        bool processed;
+        uint256 submittedBlock;
+    }
+
     // ─── Errors ───
     error ProposalAlreadyExecuted(uint256 proposalId);
     error ProposalNotActive(uint256 proposalId);
@@ -26,6 +35,8 @@ interface IGovernanceGate {
     error DoubleVoting(uint256 nullifierHash);
     error InvalidProof();
     error GovernanceNotConfigured();
+    error RequestAlreadyProcessed(uint256 requestId);
+    error InvalidIdkitResponse();
 
     // ─── Actions (Direct On-Chain Verification) ───
 
@@ -59,6 +70,36 @@ interface IGovernanceGate {
         uint256 nullifierHash,
         uint256[8] calldata proof
     ) external;
+
+    // ─── Proof Queue (User → On-Chain → CRE Off-Chain Verification) ───
+
+    /**
+     * @notice Submit an IDKit proof for off-chain verification by the CRE DON.
+     * @dev The raw IDKit response JSON is stored on-chain. The CRE workflow reads
+     *      it, forwards it to POST /api/v4/verify/{rp_id}, and writes the result
+     *      back via proposeAttested/voteAttested.
+     * @param idkitResponse The raw IDKit JSON response bytes (proof, nullifier, merkle_root, etc.).
+     * @param descriptionHash Hash of the proposal text/details.
+     * @return requestId The unique identifier for the pending request.
+     */
+    function submitProofRequest(
+        bytes calldata idkitResponse,
+        bytes32 descriptionHash
+    ) external returns (uint256 requestId);
+
+    /**
+     * @notice Read a pending proof request.
+     * @param requestId The ID of the pending request.
+     * @return The pending request data.
+     */
+    function getPendingRequest(
+        uint256 requestId
+    ) external view returns (PendingRequest memory);
+
+    /**
+     * @notice Number of pending proof requests.
+     */
+    function pendingRequestCount() external view returns (uint256);
 
     // ─── Actions (CRE DON-Attested — Off-Chain Verification) ───
 
@@ -117,4 +158,9 @@ interface IGovernanceGate {
         bool support
     );
     event ProposalExecuted(uint256 indexed proposalId);
+    event VerificationRequested(
+        uint256 indexed requestId,
+        address indexed requester,
+        bytes32 descriptionHash
+    );
 }

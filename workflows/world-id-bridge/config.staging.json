@@ -2,11 +2,12 @@
   "schedule": "0 */6 * * *",
   "rpId": "rp_aa1cd1f82b8d58fa",
   "appId": "app_f50f0c294fd5aef73d093bc24c44c01c",
-  "consumerAddress": "0x0000000000000000000000000000000000000000",
-  "governanceGateAddress": "0x0000000000000000000000000000000000000000",
+  "consumerAddress": "0xd96b4ABfE8097AD706D1aD786cE518E210339639",
+  "governanceGateAddress": "0xA7a50F9A7aD3461cd2A28b2Ba41405cF7F204f23",
   "chainName": "ethereum-testnet-sepolia",
   "chainId": 11155111,
   "isTestnet": true,
   "gasLimit": "500000",
-  "worldIdApiUrl": "https://developer.world.org/api/v4/verify"
+  "worldIdApiUrl": "https://developer.world.org/api/v4/verify",
+  "operatorAddress": "0xF89227c33F8Ef6f623ad9303e72cf8dc17f7643F"
 }

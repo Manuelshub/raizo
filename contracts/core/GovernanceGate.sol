@@ -23,9 +23,11 @@ contract GovernanceGate is
 
     IWorldID public worldId;
     uint256 public proposalCount;
+    uint256 public pendingRequestCount;
 
     mapping(uint256 => Proposal) private _proposals;
     mapping(uint256 => bool) private _nullifierHashes;
+    mapping(uint256 => PendingRequest) private _pendingRequests;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -112,6 +114,52 @@ contract GovernanceGate is
 
         _nullifierHashes[nullifierHash] = true;
         _castVote(proposalId, support, msg.sender);
+    }
+
+    // ─── Proof Queue ────────────────────────────────────────────────────
+
+    /**
+     * @notice Submit an IDKit proof for off-chain verification by the CRE DON.
+     * @param idkitResponse Raw IDKit JSON response bytes.
+     * @param descriptionHash Hash of the proposal text/details.
+     * @return requestId Unique identifier for the pending request.
+     */
+    function submitProofRequest(
+        bytes calldata idkitResponse,
+        bytes32 descriptionHash
+    ) external override returns (uint256 requestId) {
+        if (idkitResponse.length == 0) revert InvalidIdkitResponse();
+
+        requestId = pendingRequestCount++;
+        _pendingRequests[requestId] = PendingRequest({
+            requester: msg.sender,
+            descriptionHash: descriptionHash,
+            idkitResponse: idkitResponse,
+            processed: false,
+            submittedBlock: block.number
+        });
+
+        emit VerificationRequested(requestId, msg.sender, descriptionHash);
+    }
+
+    /// @inheritdoc IGovernanceGate
+    function getPendingRequest(
+        uint256 requestId
+    ) external view override returns (PendingRequest memory) {
+        return _pendingRequests[requestId];
+    }
+
+    /**
+     * @notice Mark a pending request as processed (called after CRE verification).
+     * @dev Only callable by ATTESTER_ROLE (RaizoConsumer / DON).
+     * @param requestId The ID of the request to mark.
+     */
+    function markRequestProcessed(
+        uint256 requestId
+    ) external onlyRole(ATTESTER_ROLE) {
+        if (_pendingRequests[requestId].processed)
+            revert RequestAlreadyProcessed(requestId);
+        _pendingRequests[requestId].processed = true;
     }
 
     // ─── CRE DON-Attested (Off-Chain Verification) ─────────────────────

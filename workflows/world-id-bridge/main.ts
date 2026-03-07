@@ -6,15 +6,15 @@ import {
   Runner,
   type Runtime,
   type NodeRuntime,
-  ConsensusAggregationByFields,
-  identical,
-  ok,
-  json,
-  hexToBase64,
   getNetwork,
   LAST_FINALIZED_BLOCK_NUMBER,
   encodeCallMsg,
   bytesToHex,
+  hexToBase64,
+  json,
+  ok,
+  ConsensusAggregationByFields,
+  identical,
 } from "@chainlink/cre-sdk";
 import {
   keccak256,
@@ -23,52 +23,10 @@ import {
   encodeAbiParameters,
   parseAbiParameters,
   stringToHex,
-  toHex,
 } from "viem";
-import { generatePaymentAuthorization, formatPaymentLog } from "../shared/x402";
 
 // ---------------------------------------------------------------------------
-// Interfaces
-// ---------------------------------------------------------------------------
-
-/**
- * World ID proof submission — data provided by the user via World App / IDKit.
- */
-interface WorldIDProof {
-  merkleRoot: string;
-  nullifierHash: string;
-  proof: string;
-  signalHash: string;
-}
-
-/**
- * Governance action request — what the user wants to do.
- */
-interface GovernanceRequest {
-  actionType: "propose" | "vote";
-  descriptionHash: string; // For propose
-  proposalId: number; // For vote
-  support: boolean; // For vote
-  voterAddress: string; // The human's wallet
-  worldIdProof: WorldIDProof;
-}
-
-/**
- * World ID API v4 verification response.
- */
-interface WorldIDVerifyResponse {
-  success: boolean;
-  nullifier?: string;
-  action?: string;
-  results?: Array<{
-    identifier: string;
-    success: boolean;
-    nullifier: string;
-  }>;
-}
-
-// ---------------------------------------------------------------------------
-// Configuration
+// Configuration & Types
 // ---------------------------------------------------------------------------
 
 type Config = {
@@ -82,30 +40,53 @@ type Config = {
   isTestnet: boolean;
   gasLimit: string;
   worldIdApiUrl: string;
+  operatorAddress: `0x${string}`;
 };
 
-// ---------------------------------------------------------------------------
-// RaizoConsumer ABI (governance report submission)
-// ---------------------------------------------------------------------------
-
-const RAIZO_CONSUMER_ABI = [
-  {
-    inputs: [
-      { name: "reportType", type: "uint8" },
-      { name: "data", type: "bytes" },
-    ],
-    name: "processReport",
-    outputs: [],
-    stateMutability: "nonpayable",
-    type: "function",
-  },
-] as const;
+interface WorldIDVerifyResponse {
+  success: boolean;
+  code?: string;
+  detail?: string;
+  results?: Array<{
+    identifier: string;
+    success: boolean;
+    nullifier?: string;
+    code?: string;
+    detail?: string;
+  }>;
+}
 
 // ---------------------------------------------------------------------------
-// GovernanceGate ABI (for reading proposal state)
+// ABIs
 // ---------------------------------------------------------------------------
 
 const GOVERNANCE_GATE_ABI = [
+  {
+    inputs: [],
+    name: "pendingRequestCount",
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [{ name: "requestId", type: "uint256" }],
+    name: "getPendingRequest",
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        components: [
+          { name: "requester", type: "address" },
+          { name: "descriptionHash", type: "bytes32" },
+          { name: "idkitResponse", type: "bytes" },
+          { name: "processed", type: "bool" },
+          { name: "submittedBlock", type: "uint256" },
+        ],
+      },
+    ],
+    stateMutability: "view",
+    type: "function",
+  },
   {
     inputs: [],
     name: "proposalCount",
@@ -113,301 +94,321 @@ const GOVERNANCE_GATE_ABI = [
     stateMutability: "view",
     type: "function",
   },
-  {
-    inputs: [{ name: "proposalId", type: "uint256" }],
-    name: "getProposal",
-    outputs: [
-      {
-        components: [
-          { name: "proposalId", type: "uint256" },
-          { name: "descriptionHash", type: "bytes32" },
-          { name: "proposer", type: "address" },
-          { name: "forVotes", type: "uint256" },
-          { name: "againstVotes", type: "uint256" },
-          { name: "startBlock", type: "uint256" },
-          { name: "endBlock", type: "uint256" },
-          { name: "executed", type: "bool" },
-        ],
-        name: "proposal",
-        type: "tuple",
-      },
-    ],
-    stateMutability: "view",
-    type: "function",
-  },
 ] as const;
 
 // ---------------------------------------------------------------------------
-// Workflow Handler
+// Helper: x402 Internal Logic
 // ---------------------------------------------------------------------------
 
-handler(
-  Runner,
-  class WorldIDBridge {
-    config!: Config;
+const submitPaymentReport = (
+  runtime: Runtime<Config>,
+  agentIdHex: `0x${string}`,
+  amount: bigint,
+) => {
+  const { operatorAddress } = runtime.config;
+  const nonce = keccak256(agentIdHex);
+  runtime.log(
+    `[x402] Authorizing ${amount} to ${operatorAddress} (nonce: ${nonce.slice(
+      0,
+      10,
+    )}...)`,
+  );
+};
 
-    buildTrigger(runtime: Runtime) {
-      this.config = runtime.getConfig<Config>();
-      return new CronCapability(this.config.schedule);
+// ---------------------------------------------------------------------------
+// Node Mode Task: World ID Verification
+// ---------------------------------------------------------------------------
+
+/**
+ * Verifies a real IDKit proof via the World ID Verify API.
+ * Runs inside DON node environment (Confidential Compute).
+ *
+ * The idkitResponseHex is the raw IDKit JSON response read from on-chain,
+ * which is forwarded directly to POST /api/v4/verify/{rp_id} as documented
+ * in https://docs.world.org/world-id/idkit/integrate#step-5
+ */
+const performVerification = (
+  nodeRuntime: NodeRuntime<Config>,
+  idkitResponseHex: string,
+): { verified: boolean; nullifierHash: string } => {
+  const { rpId, worldIdApiUrl } = nodeRuntime.config;
+  const http = new HTTPClient();
+
+  // Construct URL: POST /api/v4/verify/{rp_id}
+  const verifyUrl = `${worldIdApiUrl}/${rpId}`;
+
+  // Decode the IDKit response from hex (stored on-chain as bytes)
+  let idkitJson: string;
+  try {
+    let hex = idkitResponseHex;
+    if (hex.startsWith("0x")) hex = hex.slice(2);
+    idkitJson = "";
+    for (let i = 0; i < hex.length; i += 2) {
+      idkitJson += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
+    }
+  } catch (err) {
+    nodeRuntime.log(`[WorldID] Failed to decode IDKit response: ${err}`);
+    return {
+      verified: false,
+      nullifierHash:
+        "0x0000000000000000000000000000000000000000000000000000000000000000",
+    };
+  }
+
+  nodeRuntime.log(`[WorldID] Endpoint: ${verifyUrl}`);
+  nodeRuntime.log(
+    `[WorldID] Forwarding IDKit response (${idkitJson.length} bytes)`,
+  );
+
+  try {
+    // Encode the IDKit JSON to hex for the CRE HTTPClient body
+    let bodyHex = "0x";
+    for (let i = 0; i < idkitJson.length; i++) {
+      bodyHex += idkitJson.charCodeAt(i).toString(16).padStart(2, "0");
     }
 
-    buildConsensus() {
-      return new ConsensusAggregationByFields({
-        fields: {
-          verified: identical(),
-          nullifierHash: identical(),
-          actionType: identical(),
-          descriptionHash: identical(),
-          proposalId: identical(),
-          support: identical(),
-          voterAddress: identical(),
-        },
-      });
-    }
+    const response = http
+      .sendRequest(nodeRuntime, {
+        url: verifyUrl,
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: hexToBase64(bodyHex as `0x${string}`),
+      })
+      .result();
 
-    async buildActions(
-      runtime: Runtime,
-      nodeRuntime: NodeRuntime | undefined,
-    ): Promise<Record<string, unknown>> {
-      const config = this.config;
-      const httpClient = new HTTPClient();
-      const evmClient = new EVMClient();
-      const network = getNetwork(config.chainName);
-
-      console.log("╔══════════════════════════════════════════════════════╗");
-      console.log("║     🌍 WORLD ID BRIDGE — CRE Governance Workflow    ║");
-      console.log("╚══════════════════════════════════════════════════════╝");
-      console.log(`  Chain: ${config.chainName} (${config.chainId})`);
-      console.log(`  RP ID: ${config.rpId}`);
-
-      // ─── Step 1: Fetch pending governance requests ───────────────────
-      // In production, requests would come from an event trigger or queue.
-      // For MVP/demo, we read the current proposal count and generate
-      // a demo governance action.
-
-      let proposalCount = 0n;
-      try {
-        const countCalldata = encodeFunctionData({
-          abi: GOVERNANCE_GATE_ABI,
-          functionName: "proposalCount",
-        });
-        const countResult = evmClient
-          .callContract(
-            runtime,
-            network,
-            config.governanceGateAddress,
-            LAST_FINALIZED_BLOCK_NUMBER,
-            encodeCallMsg(countCalldata, GOVERNANCE_GATE_ABI),
-          )
-          .result();
-        const decoded = decodeFunctionResult({
-          abi: GOVERNANCE_GATE_ABI,
-          functionName: "proposalCount",
-          data: ("0x" + bytesToHex(countResult)) as `0x${string}`,
-        });
-        proposalCount = decoded as bigint;
-      } catch {
-        console.log("  [INFO] Could not read proposalCount, defaulting to 0");
-      }
-
-      console.log(`\n  📊 Current proposals on-chain: ${proposalCount}`);
-
-      // ─── Step 2: Verify World ID proof off-chain ────────────────────
-      // This is the KEY innovation: CRE DON nodes verify the proof via
-      // World's API, producing a DON-signed attestation.
-
-      let verified = false;
-      let nullifierHash = "0x0";
-      const actionType = proposalCount === 0n ? "propose" : "vote";
-      const action =
-        actionType === "propose"
-          ? "raizo-governance-propose"
-          : `raizo-governance-vote-${proposalCount - 1n}`;
-
-      console.log(`\n  🔐 Verifying World ID proof for action: "${action}"`);
-
-      if (nodeRuntime) {
-        // Running in DON node — make the actual API call
-        try {
-          const verifyUrl = `${config.worldIdApiUrl}/${config.rpId}`;
-          console.log(`  [DON] Calling World ID API: ${verifyUrl}`);
-
-          // For demo: simulate a valid proof verification
-          // In production, the proof data comes from the user's World App
-          const verifyBody = {
-            protocol_version: "3.0",
-            nonce: toHex(BigInt(Date.now())),
-            action,
-            responses: [
-              {
-                identifier: "orb",
-                merkle_root:
-                  "0x2264a66d162d7893e12ea8e3c072c51e785bc085ad655f64c10c1a61e00f0bc2",
-                nullifier:
-                  "0x2bf8406809dcefb1486dadc96c0a897db9bab002053054cf64272db512c6fbd8",
-                proof:
-                  "0x1aa8b8f3b2d2de5ff452c0e1a83e29d6bf46fb83ef35dc5957121ff3d3698a11",
-                signal_hash:
-                  "0x00c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a4",
-              },
-            ],
-            environment: config.isTestnet ? "staging" : "production",
-          };
-
-          const response = httpClient
-            .fetch(runtime, {
-              method: "POST",
-              url: verifyUrl,
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify(verifyBody),
-              timeoutMs: 10000,
-            })
-            .result();
-
-          const parsed = json<WorldIDVerifyResponse>(ok(response));
-
-          if (parsed.success) {
-            verified = true;
-            nullifierHash =
-              parsed.nullifier || parsed.results?.[0]?.nullifier || "0x0";
-            console.log(`  ✅ World ID VERIFIED`);
-            console.log(`     Nullifier: ${nullifierHash.substring(0, 18)}...`);
-          } else {
-            console.log(`  ❌ World ID verification FAILED`);
-            console.log(`     Response: ${JSON.stringify(parsed)}`);
-          }
-        } catch (error) {
-          // For demo simulation: treat as verified with a deterministic nullifier
-          console.log(`  [DEMO] World ID API not reachable in simulation mode`);
-          console.log(
-            `  [DEMO] Using deterministic nullifier for demo purposes`,
-          );
-          verified = true;
-          nullifierHash = keccak256(
-            stringToHex(`raizo-demo-nullifier-${action}-${Date.now()}`),
-          );
-          console.log(`  ✅ World ID VERIFIED (demo mode)`);
-          console.log(`     Nullifier: ${nullifierHash.substring(0, 18)}...`);
-        }
-      } else {
-        // Running outside DON — simulation mode
-        console.log(`  [SIM] Simulating World ID verification`);
-        verified = true;
-        nullifierHash = keccak256(stringToHex(`raizo-sim-nullifier-${action}`));
-        console.log(`  ✅ World ID VERIFIED (simulation)`);
-        console.log(`     Nullifier: ${nullifierHash.substring(0, 18)}...`);
-      }
-
-      if (!verified) {
-        console.log(`\n  🛑 Proof not verified. Aborting governance action.`);
-        return {
-          verified: false,
-          nullifierHash: "0x0",
-          actionType: "none",
-          descriptionHash: "0x0",
-          proposalId: 0,
-          support: false,
-          voterAddress: "0x0000000000000000000000000000000000000000",
-        };
-      }
-
-      // ─── Step 3: Prepare governance action payload ──────────────────
-
-      const descriptionHash =
-        actionType === "propose"
-          ? keccak256(
-              stringToHex(
-                "Raizo Governance: Enable enhanced monitoring for Aave v3",
-              ),
-            )
-          : "0x0000000000000000000000000000000000000000000000000000000000000000";
-
-      const proposalId = actionType === "vote" ? Number(proposalCount - 1n) : 0;
-      const support = true; // Default: vote in favor
-      const voterAddress = "0x0000000000000000000000000000000000000001"; // Demo address
-
-      console.log(`\n  📝 Governance Action:`);
-      console.log(`     Type: ${actionType.toUpperCase()}`);
-      if (actionType === "propose") {
-        console.log(`     Description: ${descriptionHash.substring(0, 18)}...`);
-      } else {
-        console.log(`     Proposal ID: ${proposalId}`);
-        console.log(`     Support: ${support ? "FOR ✅" : "AGAINST ❌"}`);
-      }
-
-      // ─── Step 4: Submit x402 payment for governance compute ─────────
-
-      const paymentAuth = generatePaymentAuthorization(
-        "0x0000000000000000000000000000000000000001", // operator
-        3_000_000n, // 3 Mock USDC for governance verification
-        "Governance World ID Verification",
-      );
-      console.log(formatPaymentLog(paymentAuth));
-
-      // ─── Step 5: Encode and submit DON-signed report ────────────────
-
-      console.log(`\n  📡 Encoding governance report for DON consensus...`);
-
-      const actionTypeUint8 = actionType === "propose" ? 0 : 1;
-
-      const governancePayload = encodeAbiParameters(
-        parseAbiParameters(
-          "uint8 actionType, bytes32 descriptionHash, uint256 proposalId, bool support, uint256 nullifierHash, address actor",
-        ),
-        [
-          actionTypeUint8,
-          descriptionHash as `0x${string}`,
-          BigInt(proposalId),
-          support,
-          BigInt(nullifierHash),
-          voterAddress as `0x${string}`,
-        ],
-      );
-
-      const reportPayload = encodeAbiParameters(
-        parseAbiParameters("uint8 reportType, bytes data"),
-        [3, governancePayload], // 3 = REPORT_TYPE_GOVERNANCE
-      );
-
-      console.log(
-        `  ✅ Report payload encoded (${reportPayload.length} bytes)`,
-      );
-
-      const reportResponse = runtime
-        .report({
-          encodedPayload: hexToBase64(reportPayload),
-          encoderName: "evm",
-          signingAlgo: "ecdsa",
-          hashingAlgo: "keccak256",
-        })
-        .result();
-
-      const writeResult = evmClient
-        .writeReport(runtime, {
-          receiver: config.consumerAddress,
-          report: reportResponse,
-          gasConfig: { gasLimit: parseInt(config.gasLimit, 10) },
-        })
-        .result();
-
-      console.log(`\n  🎉 Governance report submitted to RaizoConsumer`);
-      console.log(`     TX: ${bytesToHex(writeResult).substring(0, 20)}...`);
-
-      console.log("╔══════════════════════════════════════════════════════╗");
-      console.log("║  ✅ WORLD ID BRIDGE — GOVERNANCE ACTION COMPLETE    ║");
-      console.log("╚══════════════════════════════════════════════════════╝");
-
+    if (!ok(response)) {
+      const statusCode = (response as any).statusCode;
+      nodeRuntime.log(`[WorldID] API returned non-OK status: ${statusCode}`);
       return {
-        verified,
-        nullifierHash,
-        actionType,
-        descriptionHash,
-        proposalId,
-        support,
-        voterAddress,
+        verified: false,
+        nullifierHash:
+          "0x0000000000000000000000000000000000000000000000000000000000000000",
       };
     }
-  },
-);
+
+    const parsed = json(response) as unknown as WorldIDVerifyResponse;
+    if (parsed.success) {
+      // Extract nullifier from the first successful result
+      const nullifier =
+        parsed.results?.[0]?.nullifier ||
+        "0x0000000000000000000000000000000000000000000000000000000000000000";
+      nodeRuntime.log(
+        `[WorldID] Verified! Nullifier: ${nullifier.slice(0, 18)}...`,
+      );
+      return { verified: true, nullifierHash: nullifier };
+    } else {
+      nodeRuntime.log(`[WorldID] Rejected: ${parsed.code} - ${parsed.detail}`);
+      return {
+        verified: false,
+        nullifierHash:
+          "0x0000000000000000000000000000000000000000000000000000000000000000",
+      };
+    }
+  } catch (err) {
+    nodeRuntime.log(`[WorldID] Error during verification: ${err}`);
+    return {
+      verified: false,
+      nullifierHash:
+        "0x0000000000000000000000000000000000000000000000000000000000000000",
+    };
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Main Handler
+// ---------------------------------------------------------------------------
+
+const onCronTrigger = async (runtime: Runtime<Config>) => {
+  const {
+    consumerAddress,
+    governanceGateAddress,
+    chainName,
+    isTestnet,
+    gasLimit,
+    operatorAddress,
+  } = runtime.config;
+
+  runtime.log(`=== Raizo World ID Bridge: Cycle Start (${chainName}) ===`);
+
+  const network = getNetwork({
+    chainFamily: "evm",
+    chainSelectorName: chainName,
+    isTestnet,
+  });
+  if (!network) throw new Error(`Unknown chain: ${chainName}`);
+
+  const evmClient = new EVMClient(network.chainSelector.selector);
+
+  // 1. Read pending request count from GovernanceGate
+  let pendingCount = 0n;
+  try {
+    const reply = evmClient
+      .callContract(runtime, {
+        call: encodeCallMsg({
+          from: "0x0000000000000000000000000000000000000000",
+          to: governanceGateAddress,
+          data: encodeFunctionData({
+            abi: GOVERNANCE_GATE_ABI,
+            functionName: "pendingRequestCount",
+          }),
+        }),
+        blockNumber: LAST_FINALIZED_BLOCK_NUMBER,
+      })
+      .result();
+
+    pendingCount = decodeFunctionResult({
+      abi: GOVERNANCE_GATE_ABI,
+      functionName: "pendingRequestCount",
+      data: bytesToHex(reply.data) as `0x${string}`,
+    }) as bigint;
+  } catch (err) {
+    runtime.log(`[State] Error reading pendingRequestCount: ${err}`);
+  }
+
+  if (pendingCount === 0n) {
+    runtime.log("[Raizo] No pending verification requests. Cycle complete.");
+    return "NoPending";
+  }
+
+  // 2. Scan for the most recent unprocessed request (iterate backwards)
+  let targetRequestId = -1n;
+  let idkitResponseHex = "";
+  let requesterAddress = "";
+  let descriptionHash = "";
+
+  for (let i = pendingCount - 1n; i >= 0n; i--) {
+    try {
+      const reqReply = evmClient
+        .callContract(runtime, {
+          call: encodeCallMsg({
+            from: "0x0000000000000000000000000000000000000000",
+            to: governanceGateAddress,
+            data: encodeFunctionData({
+              abi: GOVERNANCE_GATE_ABI,
+              functionName: "getPendingRequest",
+              args: [i],
+            }),
+          }),
+          blockNumber: LAST_FINALIZED_BLOCK_NUMBER,
+        })
+        .result();
+
+      const decoded = decodeFunctionResult({
+        abi: GOVERNANCE_GATE_ABI,
+        functionName: "getPendingRequest",
+        data: bytesToHex(reqReply.data) as `0x${string}`,
+      }) as any;
+
+      const request = decoded;
+      if (!request.processed) {
+        targetRequestId = i;
+        idkitResponseHex = request.idkitResponse;
+        requesterAddress = request.requester;
+        descriptionHash = request.descriptionHash;
+        break;
+      }
+    } catch (err) {
+      runtime.log(`[State] Error reading request ${i}: ${err}`);
+    }
+  }
+
+  if (targetRequestId < 0n) {
+    runtime.log("[Raizo] All requests already processed. Cycle complete.");
+    return "AllProcessed";
+  }
+
+  runtime.log(
+    `[WorldID] Processing request #${targetRequestId} from ${requesterAddress}`,
+  );
+
+  // 3. Proof Verification (DON Consensus)
+  const result = runtime
+    .runInNodeMode(
+      performVerification,
+      ConsensusAggregationByFields<{
+        verified: boolean;
+        nullifierHash: string;
+      }>({
+        verified: identical,
+        nullifierHash: identical,
+      }),
+    )(idkitResponseHex)
+    .result() as { verified: boolean; nullifierHash: string };
+
+  if (!result.verified) {
+    runtime.log(
+      `[Raizo] Request #${targetRequestId} failed: World ID verification rejected.`,
+    );
+    return "Rejected";
+  }
+
+  runtime.log(
+    `[WorldID] Verified! Nullifier: ${result.nullifierHash.slice(0, 18)}...`,
+  );
+
+  // 4. x402 Internal Settlement
+  submitPaymentReport(
+    runtime,
+    keccak256(stringToHex("gov-bridge")),
+    3_000_000n,
+  );
+
+  // 5. Submit attested governance action on-chain
+  const govData = encodeAbiParameters(
+    parseAbiParameters(
+      "uint8 actionType, bytes32 descriptionHash, uint256 proposalId, bool support, uint256 nullifierHash, address actor",
+    ),
+    [
+      0, // actionType: propose
+      descriptionHash as `0x${string}`,
+      0n, // proposalId (not applicable for propose)
+      true,
+      BigInt(result.nullifierHash),
+      requesterAddress as `0x${string}`,
+    ],
+  );
+
+  const reportPayload = encodeAbiParameters(
+    parseAbiParameters("uint8 reportType, bytes data"),
+    [3, govData], // 3 = REPORT_TYPE_GOVERNANCE
+  );
+
+  const signedReport = runtime
+    .report({
+      encodedPayload: hexToBase64(reportPayload),
+      encoderName: "evm",
+      signingAlgo: "ecdsa",
+      hashingAlgo: "keccak256",
+    })
+    .result();
+
+  const writeResult = evmClient
+    .writeReport(runtime, {
+      receiver: consumerAddress,
+      report: signedReport,
+      gasConfig: { gasLimit: parseInt(gasLimit, 10) },
+    })
+    .result();
+
+  runtime.log(
+    `=== Raizo World ID Bridge: Request #${targetRequestId} Complete. TX: ${bytesToHex(
+      writeResult.txHash || new Uint8Array(32),
+    )} ===`,
+  );
+
+  return "Success";
+};
+
+// ---------------------------------------------------------------------------
+// Initialization
+// ---------------------------------------------------------------------------
+
+const initWorkflow = (config: Config) => {
+  const cron = new CronCapability();
+  return [handler(cron.trigger({ schedule: config.schedule }), onCronTrigger)];
+};
+
+export async function main() {
+  const runner = await Runner.newRunner<Config>();
+  await runner.run(initWorkflow);
+}
