@@ -47,7 +47,8 @@
     "hardhat": "^2.19.0",
     "hardhat-gas-reporter": "^1.0.8",
     "solidity-coverage": "^0.8.1",
-    "typechain": "^8.3.0"
+    "typechain": "^8.3.0",
+    "viem": "^2.21.0"
   },
   "keywords": [],
   "author": "",
