@@ -4,30 +4,27 @@ pragma solidity ^0.8.23;
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "./interfaces/IGovernanceGate.sol";
-import "./interfaces/IWorldID.sol";
 
 /**
  * @title GovernanceGate
- * @notice Sybil-resistant governance module leveraging World ID for proof-of-humanness.
+ * @notice Minimal governance module with admin-only configuration setters and emergency pause control.
  * @dev Implementation follows UUPS upgradeable pattern.
+ *      Configuration parameters are set by admin and can be updated on-the-fly for demo flexibility.
  */
 contract GovernanceGate is
     Initializable,
     IGovernanceGate,
     AccessControlUpgradeable,
+    PausableUpgradeable,
     UUPSUpgradeable
 {
-    /// @notice Role for CRE DON-attested governance actions (e.g., RaizoConsumer).
-    bytes32 public constant ATTESTER_ROLE = keccak256("ATTESTER_ROLE");
+    /// @notice Role for emergency pause actions.
+    bytes32 public constant EMERGENCY_PAUSER_ROLE =
+        keccak256("EMERGENCY_PAUSER_ROLE");
 
-    IWorldID public worldId;
-    uint256 public proposalCount;
-    uint256 public pendingRequestCount;
-
-    mapping(uint256 => Proposal) private _proposals;
-    mapping(uint256 => bool) private _nullifierHashes;
-    mapping(uint256 => PendingRequest) private _pendingRequests;
+    IGovernanceGate.Config public config;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -36,13 +33,23 @@ contract GovernanceGate is
 
     /**
      * @notice Initializes the GovernanceGate contract.
-     * @param _worldId The address of the World ID verification Hub.
+     * @param _admin The admin address for configuration management.
+     * @param _confidenceThreshold Initial confidence threshold (e.g., 8500 = 85%).
      */
-    function initialize(address _worldId) public initializer {
+    function initialize(
+        address _admin,
+        uint16 _confidenceThreshold
+    ) public initializer {
         __AccessControl_init();
+        __Pausable_init();
 
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        worldId = IWorldID(_worldId);
+        _grantRole(DEFAULT_ADMIN_ROLE, _admin);
+        _grantRole(EMERGENCY_PAUSER_ROLE, _admin);
+
+        config = Config({
+            confidenceThreshold: _confidenceThreshold,
+            emergencyPauseDelay: 0
+        });
     }
 
     /**
@@ -52,241 +59,77 @@ contract GovernanceGate is
         address newImplementation
     ) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
-    // ─── Direct On-Chain Verification ───────────────────────────────────
+    // ─── Admin Configuration Setters ────────────────────────────────────
 
     /**
-     * @notice Submit a proposal (requires on-chain World ID verification).
-     * @param descriptionHash Hash of the proposal text/details.
-     * @param root World ID Merkle root.
-     * @param nullifierHash Prevents double-voting/proposing.
-     * @param proof Groth16 ZK proof.
-     * @return proposalId Unique identifier for the proposal.
+     * @notice Update the confidence threshold for threat detection.
+     * @param newThreshold New threshold (e.g., 8500 = 85%).
      */
-    function propose(
-        bytes32 descriptionHash,
-        uint256 root,
-        uint256 nullifierHash,
-        uint256[8] calldata proof
-    ) external override returns (uint256 proposalId) {
-        if (_nullifierHashes[nullifierHash]) revert DoubleVoting(nullifierHash);
-
-        worldId.verifyProof(
-            root,
-            1, // groupId
-            uint256(keccak256(abi.encodePacked(msg.sender))) >> 8,
-            nullifierHash,
-            uint256(keccak256(abi.encodePacked("proposal-registration"))) >> 8,
-            proof
-        );
-
-        _nullifierHashes[nullifierHash] = true;
-
-        proposalId = _createProposal(descriptionHash, msg.sender);
+    function setConfidenceThreshold(
+        uint16 newThreshold
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (newThreshold > 10000) revert InvalidThreshold(newThreshold);
+        config.confidenceThreshold = newThreshold;
+        emit ConfigUpdated("confidenceThreshold", newThreshold);
     }
 
     /**
-     * @notice Cast a vote (requires on-chain World ID verification).
-     * @param proposalId The ID of the proposal to vote on.
-     * @param support Whether to support (true) or oppose (false) the proposal.
-     * @param root World ID Merkle root.
-     * @param nullifierHash Prevents double-voting.
-     * @param proof Groth16 ZK proof.
+     * @notice Update the emergency pause delay.
+     * @param newDelay New delay in blocks.
      */
-    function vote(
-        uint256 proposalId,
-        bool support,
-        uint256 root,
-        uint256 nullifierHash,
-        uint256[8] calldata proof
-    ) external override {
-        _validateVotePreConditions(proposalId, nullifierHash);
-
-        worldId.verifyProof(
-            root,
-            1,
-            uint256(keccak256(abi.encodePacked(msg.sender))) >> 8,
-            nullifierHash,
-            uint256(
-                keccak256(abi.encodePacked(address(this), "vote", proposalId))
-            ) >> 8,
-            proof
-        );
-
-        _nullifierHashes[nullifierHash] = true;
-        _castVote(proposalId, support, msg.sender);
+    function setEmergencyPauseDelay(
+        uint256 newDelay
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        config.emergencyPauseDelay = newDelay;
+        emit ConfigUpdated("emergencyPauseDelay", newDelay);
     }
 
-    // ─── Proof Queue ────────────────────────────────────────────────────
+    // ─── Emergency Controls ─────────────────────────────────────────────
 
     /**
-     * @notice Submit an IDKit proof for off-chain verification by the CRE DON.
-     * @param idkitResponse Raw IDKit JSON response bytes.
-     * @param descriptionHash Hash of the proposal text/details.
-     * @return requestId Unique identifier for the pending request.
+     * @notice Trigger emergency pause of all sentinel actions.
      */
-    function submitProofRequest(
-        bytes calldata idkitResponse,
-        bytes32 descriptionHash
-    ) external override returns (uint256 requestId) {
-        if (idkitResponse.length == 0) revert InvalidIdkitResponse();
-
-        requestId = pendingRequestCount++;
-        _pendingRequests[requestId] = PendingRequest({
-            requester: msg.sender,
-            descriptionHash: descriptionHash,
-            idkitResponse: idkitResponse,
-            processed: false,
-            submittedBlock: block.number
-        });
-
-        emit VerificationRequested(requestId, msg.sender, descriptionHash);
-    }
-
-    /// @inheritdoc IGovernanceGate
-    function getPendingRequest(
-        uint256 requestId
-    ) external view override returns (PendingRequest memory) {
-        return _pendingRequests[requestId];
+    function emergencyPause() external onlyRole(EMERGENCY_PAUSER_ROLE) {
+        _pause();
+        emit EmergencyPauseTriggered(msg.sender);
     }
 
     /**
-     * @notice Mark a pending request as processed (called after CRE verification).
-     * @dev Only callable by ATTESTER_ROLE (RaizoConsumer / DON).
-     * @param requestId The ID of the request to mark.
+     * @notice Lift the emergency pause (admin only).
      */
-    function markRequestProcessed(
-        uint256 requestId
-    ) external onlyRole(ATTESTER_ROLE) {
-        if (_pendingRequests[requestId].processed)
-            revert RequestAlreadyProcessed(requestId);
-        _pendingRequests[requestId].processed = true;
-    }
-
-    // ─── CRE DON-Attested (Off-Chain Verification) ─────────────────────
-
-    /**
-     * @notice Submit a proposal with a DON-attested World ID proof.
-     * @dev The CRE workflow verified the proof off-chain via World ID API.
-     *      DON 2/3 consensus + KeystoneForwarder signature provides the
-     *      trust anchor. Nullifier uniqueness is enforced on-chain.
-     * @param descriptionHash Hash of the proposal text/details.
-     * @param nullifierHash Prevents double-proposing (sybil resistance).
-     * @param proposer The address of the human who submitted the proof.
-     * @return proposalId Unique identifier for the proposal.
-     */
-    function proposeAttested(
-        bytes32 descriptionHash,
-        uint256 nullifierHash,
-        address proposer
-    ) external override onlyRole(ATTESTER_ROLE) returns (uint256 proposalId) {
-        if (_nullifierHashes[nullifierHash]) revert DoubleVoting(nullifierHash);
-
-        _nullifierHashes[nullifierHash] = true;
-
-        proposalId = _createProposal(descriptionHash, proposer);
+    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _unpause();
+        emit PauseLifted(msg.sender);
     }
 
     /**
-     * @notice Cast a vote with a DON-attested World ID proof.
-     * @dev The CRE workflow verified the proof off-chain via World ID API.
-     *      DON 2/3 consensus + KeystoneForwarder signature provides the
-     *      trust anchor. Nullifier uniqueness is enforced on-chain.
-     * @param proposalId The ID of the proposal to vote on.
-     * @param support Whether to support (true) or oppose (false) the proposal.
-     * @param nullifierHash Prevents double-voting (sybil resistance).
-     * @param voter The address of the human who submitted the proof.
+     * @notice Check if the system is paused.
      */
-    function voteAttested(
-        uint256 proposalId,
-        bool support,
-        uint256 nullifierHash,
-        address voter
-    ) external override onlyRole(ATTESTER_ROLE) {
-        _validateVotePreConditions(proposalId, nullifierHash);
-
-        _nullifierHashes[nullifierHash] = true;
-        _castVote(proposalId, support, voter);
+    function isPaused() external view returns (bool) {
+        return paused();
     }
 
-    // ─── Shared Logic ───────────────────────────────────────────────────
+    // ─── Config Getters ────────────────────────────────────────────────
 
     /**
-     * @notice Execute a passed proposal.
-     * @param proposalId The ID of the proposal to execute.
+     * @notice Get the current confidence threshold.
      */
-    function execute(uint256 proposalId) external override {
-        Proposal storage proposal = _proposals[proposalId];
-        if (proposal.executed) revert ProposalAlreadyExecuted(proposalId);
-        if (block.number <= proposal.endBlock)
-            revert ProposalNotActive(proposalId);
-        if (proposal.forVotes <= proposal.againstVotes)
-            revert ProposalNotPassed(proposalId);
-
-        proposal.executed = true;
-        emit ProposalExecuted(proposalId);
-    }
-
-    /// @inheritdoc IGovernanceGate
-    function getProposal(
-        uint256 proposalId
-    ) external view override returns (Proposal memory) {
-        return _proposals[proposalId];
-    }
-
-    // ─── Internal Helpers ───────────────────────────────────────────────
-
-    /**
-     * @dev Creates a new proposal and emits the ProposalCreated event.
-     */
-    function _createProposal(
-        bytes32 descriptionHash,
-        address proposer
-    ) internal returns (uint256 proposalId) {
-        proposalId = proposalCount++;
-        _proposals[proposalId] = Proposal({
-            proposalId: proposalId,
-            descriptionHash: descriptionHash,
-            proposer: proposer,
-            forVotes: 0,
-            againstVotes: 0,
-            startBlock: block.number,
-            endBlock: block.number + 7200, // ~1 day
-            executed: false
-        });
-
-        emit ProposalCreated(proposalId, proposer, descriptionHash);
+    function getConfidenceThreshold() external view returns (uint16) {
+        return config.confidenceThreshold;
     }
 
     /**
-     * @dev Validates vote pre-conditions: active, not executed, no double-vote.
+     * @notice Get the current emergency pause delay.
      */
-    function _validateVotePreConditions(
-        uint256 proposalId,
-        uint256 nullifierHash
-    ) internal view {
-        Proposal storage proposal = _proposals[proposalId];
-        if (block.number > proposal.endBlock)
-            revert ProposalExpired(proposalId);
-        if (proposal.executed) revert ProposalAlreadyExecuted(proposalId);
-        if (_nullifierHashes[nullifierHash]) revert DoubleVoting(nullifierHash);
+    function getEmergencyPauseDelay() external view returns (uint256) {
+        return config.emergencyPauseDelay;
     }
 
     /**
-     * @dev Records a vote and emits the VoteCast event.
+     * @notice Get the full configuration.
      */
-    function _castVote(
-        uint256 proposalId,
-        bool support,
-        address voter
-    ) internal {
-        Proposal storage proposal = _proposals[proposalId];
-        if (support) {
-            proposal.forVotes++;
-        } else {
-            proposal.againstVotes++;
-        }
-
-        emit VoteCast(proposalId, voter, support);
+    function getConfig() external view returns (IGovernanceGate.Config memory) {
+        return config;
     }
 
     uint256[50] private __gap;

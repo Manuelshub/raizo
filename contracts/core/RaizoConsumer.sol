@@ -167,38 +167,11 @@ contract RaizoConsumer is ReceiverTemplate {
     }
 
     /**
-     * @dev Decodes governance action and forwards to GovernanceGate.
-     *      Action types: 0 = propose, 1 = vote.
+     * @dev Governance actions are no longer supported (World ID integration removed).
+     *      This is a placeholder to prevent report routing errors.
      */
     function _handleGovernanceAction(bytes memory data) internal {
-        if (address(governanceGate) == address(0))
-            revert GovernanceGateNotConfigured();
-
-        (
-            uint8 actionType,
-            bytes32 descriptionHash,
-            uint256 proposalId,
-            bool support,
-            uint256 nullifierHash,
-            address actor
-        ) = abi.decode(data, (uint8, bytes32, uint256, bool, uint256, address));
-
-        if (actionType == 0) {
-            governanceGate.proposeAttested(
-                descriptionHash,
-                nullifierHash,
-                actor
-            );
-        } else {
-            governanceGate.voteAttested(
-                proposalId,
-                support,
-                nullifierHash,
-                actor
-            );
-        }
-
-        emit GovernanceActionProcessed(actionType, nullifierHash);
+        revert("Governance actions not supported");
     }
 
     /// @notice Update SentinelActions address. Owner-only.

@@ -6,9 +6,9 @@
  * Addresses SC-4 (Storage collision on proxy upgrade) from SECURITY.md §3.1.
  */
 
+import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
 import { expect } from "chai";
 import { ethers, upgrades } from "hardhat";
-import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
 
 describe("Storage Gap Validation (SC-4)", function () {
     let owner: SignerWithAddress;
@@ -49,8 +49,7 @@ describe("Storage Gap Validation (SC-4)", function () {
             {
                 name: "GovernanceGate",
                 deployArgs: async () => {
-                    const wid = await (await ethers.getContractFactory("MockWorldID")).deploy();
-                    return [await wid.getAddress()];
+                    return [owner.address, 8500]; // admin, confidenceThreshold
                 },
             },
             {

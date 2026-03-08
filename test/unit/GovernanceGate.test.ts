@@ -1,51 +1,27 @@
+import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
 import { expect } from "chai";
 import { ethers, upgrades } from "hardhat";
-import { GovernanceGate, MockWorldID } from "../../typechain-types";
-import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
+import { GovernanceGate } from "../../typechain-types";
 
-describe("GovernanceGate (TDD Red Phase)", function () {
+describe("GovernanceGate (Admin-Only Configuration)", function () {
   let govGate: GovernanceGate;
-  let worldId: MockWorldID;
-  let owner: SignerWithAddress;
-  let proposer: SignerWithAddress;
-  let voter: SignerWithAddress;
+  let admin: SignerWithAddress;
+  let pauser: SignerWithAddress;
+  let user: SignerWithAddress;
 
-  const DESCRIPTION_HASH = ethers.id("Update Confidence Threshold to 90%");
-  const ROOT = 12345;
-  const NULLIFIER_HASH = 67890;
-  const PROOF = [0, 0, 0, 0, 0, 0, 0, 0] as [
-    bigint,
-    bigint,
-    bigint,
-    bigint,
-    bigint,
-    bigint,
-    bigint,
-    bigint,
-  ];
-  const INVALID_PROOF = [
-    BigInt("0xDEADBEEF"),
-    BigInt(0),
-    BigInt(0),
-    BigInt(0),
-    BigInt(0),
-    BigInt(0),
-    BigInt(0),
-    BigInt(0),
-  ] as [bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint];
+  const INITIAL_THRESHOLD = 8500; // 85%
+  const NEW_THRESHOLD = 9000; // 90%
+  const PAUSE_DELAY = 100; // blocks
 
   beforeEach(async function () {
-    [owner, proposer, voter] = await ethers.getSigners();
-
-    const MockWorldIDFactory = await ethers.getContractFactory("MockWorldID");
-    worldId = await MockWorldIDFactory.deploy();
+    [admin, pauser, user] = await ethers.getSigners();
 
     const GovernanceGateFactory = await ethers.getContractFactory(
       "GovernanceGate",
     );
     govGate = (await upgrades.deployProxy(
       GovernanceGateFactory,
-      [await worldId.getAddress()],
+      [admin.address, INITIAL_THRESHOLD],
       {
         initializer: "initialize",
         kind: "uups",
@@ -54,230 +30,156 @@ describe("GovernanceGate (TDD Red Phase)", function () {
     await govGate.waitForDeployment();
   });
 
-  describe("Proposals", function () {
-    it("should allow creating a proposal with valid World ID proof", async function () {
-      await expect(
-        govGate
-          .connect(proposer)
-          .propose(DESCRIPTION_HASH, ROOT, NULLIFIER_HASH, PROOF),
-      ).to.emit(govGate, "ProposalCreated");
-
-      const proposal = await govGate.getProposal(0);
-      expect(proposal.proposer).to.equal(proposer.address);
-      expect(proposal.descriptionHash).to.equal(DESCRIPTION_HASH);
+  describe("Initialization", function () {
+    it("should initialize with correct admin and threshold", async function () {
+      const config = await govGate.getConfig();
+      expect(config.confidenceThreshold).to.equal(INITIAL_THRESHOLD);
+      expect(config.emergencyPauseDelay).to.equal(0);
     });
 
-    it("should fail to propose with invalid World ID proof", async function () {
-      await expect(
-        govGate
-          .connect(proposer)
-          .propose(DESCRIPTION_HASH, ROOT, NULLIFIER_HASH, INVALID_PROOF),
-      ).to.be.revertedWithCustomError(govGate, "InvalidProof");
-    });
-  });
+    it("should grant DEFAULT_ADMIN_ROLE and EMERGENCY_PAUSER_ROLE to admin", async function () {
+      const DEFAULT_ADMIN_ROLE =
+        "0x0000000000000000000000000000000000000000000000000000000000000000";
+      const EMERGENCY_PAUSER_ROLE = ethers.keccak256(
+        ethers.toUtf8Bytes("EMERGENCY_PAUSER_ROLE"),
+      );
 
-  describe("Voting", function () {
-    beforeEach(async function () {
-      await govGate
-        .connect(proposer)
-        .propose(DESCRIPTION_HASH, ROOT, NULLIFIER_HASH, PROOF);
-    });
-
-    it("should allow voting with valid World ID proof", async function () {
-      const voteNullifier = 11111;
-      await expect(
-        govGate.connect(voter).vote(0, true, ROOT, voteNullifier, PROOF),
-      )
-        .to.emit(govGate, "VoteCast")
-        .withArgs(0, voter.address, true);
-
-      const proposal = await govGate.getProposal(0);
-      expect(proposal.forVotes).to.equal(1);
+      expect(
+        await govGate.hasRole(DEFAULT_ADMIN_ROLE, admin.address),
+      ).to.be.true;
+      expect(
+        await govGate.hasRole(EMERGENCY_PAUSER_ROLE, admin.address),
+      ).to.be.true;
     });
 
-    it("should prevent double voting with same nullifier", async function () {
-      const voteNullifier = 11111;
-      await govGate.connect(voter).vote(0, true, ROOT, voteNullifier, PROOF);
-
-      await expect(
-        govGate.connect(voter).vote(0, false, ROOT, voteNullifier, PROOF),
-      )
-        .to.be.revertedWithCustomError(govGate, "DoubleVoting")
-        .withArgs(voteNullifier);
-    });
-
-    it("should fail to vote on expired proposal", async function () {
-      await ethers.provider.send("evm_mine", []); // mine blocks to expire
-      for (let i = 0; i < 7201; i++) await ethers.provider.send("evm_mine", []);
-
-      await expect(
-        govGate.connect(voter).vote(0, true, ROOT, 99999, PROOF),
-      ).to.be.revertedWithCustomError(govGate, "ProposalExpired");
+    it("should not be paused on initialization", async function () {
+      expect(await govGate.isPaused()).to.be.false;
     });
   });
 
-  describe("Execution", function () {
-    beforeEach(async function () {
-      await govGate
-        .connect(proposer)
-        .propose(DESCRIPTION_HASH, ROOT, NULLIFIER_HASH, PROOF);
-      await govGate.connect(voter).vote(0, true, ROOT, 11111, PROOF);
-      // Wait for proposal to end
-      for (let i = 0; i < 7201; i++) await ethers.provider.send("evm_mine", []);
+  describe("Configuration Setters", function () {
+    it("should allow admin to update confidence threshold", async function () {
+      await expect(govGate.connect(admin).setConfidenceThreshold(NEW_THRESHOLD))
+        .to.emit(govGate, "ConfigUpdated")
+        .withArgs("confidenceThreshold", NEW_THRESHOLD);
+
+      const config = await govGate.getConfig();
+      expect(config.confidenceThreshold).to.equal(NEW_THRESHOLD);
     });
 
-    it("should execute a passed proposal", async function () {
-      await expect(govGate.execute(0))
-        .to.emit(govGate, "ProposalExecuted")
-        .withArgs(0);
-
-      const proposal = await govGate.getProposal(0);
-      expect(proposal.executed).to.be.true;
+    it("should reject invalid confidence threshold (> 10000)", async function () {
+      await expect(
+        govGate.connect(admin).setConfidenceThreshold(10001),
+      ).to.be.revertedWithCustomError(govGate, "InvalidThreshold");
     });
 
-    it("should fail to execute if proposal did not pass", async function () {
-      // Create another proposal that fails
-      const p2Hash = ethers.id("Fail Proposal");
-      await govGate.connect(proposer).propose(p2Hash, ROOT, 22222, PROOF);
-      await govGate.connect(voter).vote(1, false, ROOT, 33333, PROOF);
-      for (let i = 0; i < 7201; i++) await ethers.provider.send("evm_mine", []);
+    it("should allow admin to update emergency pause delay", async function () {
+      await expect(govGate.connect(admin).setEmergencyPauseDelay(PAUSE_DELAY))
+        .to.emit(govGate, "ConfigUpdated")
+        .withArgs("emergencyPauseDelay", PAUSE_DELAY);
 
-      await expect(govGate.execute(1))
-        .to.be.revertedWithCustomError(govGate, "ProposalNotPassed")
-        .withArgs(1);
+      const config = await govGate.getConfig();
+      expect(config.emergencyPauseDelay).to.equal(PAUSE_DELAY);
+    });
+
+    it("should reject non-admin from setting threshold", async function () {
+      await expect(
+        govGate.connect(user).setConfidenceThreshold(NEW_THRESHOLD),
+      ).to.be.revertedWithCustomError(govGate, "AccessControlUnauthorizedAccount");
+    });
+
+    it("should reject non-admin from setting pause delay", async function () {
+      await expect(
+        govGate.connect(user).setEmergencyPauseDelay(PAUSE_DELAY),
+      ).to.be.revertedWithCustomError(govGate, "AccessControlUnauthorizedAccount");
     });
   });
 
-  describe("DON-Attested Governance (CRE World ID Bridge)", function () {
-    let attester: SignerWithAddress;
-    const ATTESTER_ROLE = ethers.keccak256(ethers.toUtf8Bytes("ATTESTER_ROLE"));
-    const ATTESTED_NULLIFIER = 777777;
-    const ATTESTED_DESC = ethers.id("Enable enhanced monitoring for Aave v3");
+  describe("Emergency Pause Controls", function () {
+    it("should allow emergency pauser to trigger pause", async function () {
+      const EMERGENCY_PAUSER_ROLE = ethers.keccak256(
+        ethers.toUtf8Bytes("EMERGENCY_PAUSER_ROLE"),
+      );
 
-    beforeEach(async function () {
-      [, , , attester] = await ethers.getSigners();
-      await govGate.grantRole(ATTESTER_ROLE, attester.address);
+      await govGate.grantRole(EMERGENCY_PAUSER_ROLE, pauser.address);
+
+      await expect(govGate.connect(pauser).emergencyPause())
+        .to.emit(govGate, "EmergencyPauseTriggered")
+        .withArgs(pauser.address);
+
+      expect(await govGate.isPaused()).to.be.true;
     });
 
-    it("should create a proposal via proposeAttested (ATTESTER_ROLE)", async function () {
-      await expect(
-        govGate
-          .connect(attester)
-          .proposeAttested(ATTESTED_DESC, ATTESTED_NULLIFIER, proposer.address),
-      )
-        .to.emit(govGate, "ProposalCreated")
-        .withArgs(0, proposer.address, ATTESTED_DESC);
+    it("should allow admin to lift pause", async function () {
+      const EMERGENCY_PAUSER_ROLE = ethers.keccak256(
+        ethers.toUtf8Bytes("EMERGENCY_PAUSER_ROLE"),
+      );
 
-      const proposal = await govGate.getProposal(0);
-      expect(proposal.proposer).to.equal(proposer.address);
+      await govGate.grantRole(EMERGENCY_PAUSER_ROLE, pauser.address);
+      await govGate.connect(pauser).emergencyPause();
+
+      await expect(govGate.connect(admin).unpause())
+        .to.emit(govGate, "PauseLifted")
+        .withArgs(admin.address);
+
+      expect(await govGate.isPaused()).to.be.false;
     });
 
-    it("should cast a vote via voteAttested (ATTESTER_ROLE)", async function () {
-      await govGate
-        .connect(attester)
-        .proposeAttested(ATTESTED_DESC, ATTESTED_NULLIFIER, proposer.address);
+    it("should reject non-admin from lifting pause", async function () {
+      const EMERGENCY_PAUSER_ROLE = ethers.keccak256(
+        ethers.toUtf8Bytes("EMERGENCY_PAUSER_ROLE"),
+      );
 
-      const voteNullifier = 888888;
-      await expect(
-        govGate
-          .connect(attester)
-          .voteAttested(0, true, voteNullifier, voter.address),
-      )
-        .to.emit(govGate, "VoteCast")
-        .withArgs(0, voter.address, true);
-
-      const proposal = await govGate.getProposal(0);
-      expect(proposal.forVotes).to.equal(1);
-    });
-
-    it("should reject attested proposal with reused nullifier (sybil resistance)", async function () {
-      await govGate
-        .connect(attester)
-        .proposeAttested(ATTESTED_DESC, ATTESTED_NULLIFIER, proposer.address);
+      await govGate.grantRole(EMERGENCY_PAUSER_ROLE, pauser.address);
+      await govGate.connect(pauser).emergencyPause();
 
       await expect(
-        govGate
-          .connect(attester)
-          .proposeAttested(
-            ethers.id("Duplicate"),
-            ATTESTED_NULLIFIER,
-            voter.address,
-          ),
-      )
-        .to.be.revertedWithCustomError(govGate, "DoubleVoting")
-        .withArgs(ATTESTED_NULLIFIER);
+        govGate.connect(user).unpause(),
+      ).to.be.revertedWithCustomError(govGate, "AccessControlUnauthorizedAccount");
     });
 
-    it("should reject attested vote with reused nullifier (sybil resistance)", async function () {
-      await govGate
-        .connect(attester)
-        .proposeAttested(ATTESTED_DESC, ATTESTED_NULLIFIER, proposer.address);
+    it("should reject non-pauser from triggering emergency pause", async function () {
+      await expect(
+        govGate.connect(user).emergencyPause(),
+      ).to.be.revertedWithCustomError(govGate, "AccessControlUnauthorizedAccount");
+    });
+  });
 
-      const voteNullifier = 999999;
-      await govGate
-        .connect(attester)
-        .voteAttested(0, true, voteNullifier, voter.address);
+  describe("Configuration Getters", function () {
+    it("should return correct confidence threshold", async function () {
+      const threshold = await govGate.getConfidenceThreshold();
+      expect(threshold).to.equal(INITIAL_THRESHOLD);
+    });
+
+    it("should return correct emergency pause delay", async function () {
+      await govGate.connect(admin).setEmergencyPauseDelay(PAUSE_DELAY);
+      const delay = await govGate.getEmergencyPauseDelay();
+      expect(delay).to.equal(PAUSE_DELAY);
+    });
+
+    it("should return full config struct", async function () {
+      await govGate.connect(admin).setConfidenceThreshold(NEW_THRESHOLD);
+      await govGate.connect(admin).setEmergencyPauseDelay(PAUSE_DELAY);
+
+      const config = await govGate.getConfig();
+      expect(config.confidenceThreshold).to.equal(NEW_THRESHOLD);
+      expect(config.emergencyPauseDelay).to.equal(PAUSE_DELAY);
+    });
+  });
+
+  describe("UUPS Upgrade Authorization", function () {
+    it("should reject non-admin from upgrading", async function () {
+      const GovernanceGateFactory = await ethers.getContractFactory(
+        "GovernanceGate",
+        user,
+      );
 
       await expect(
-        govGate
-          .connect(attester)
-          .voteAttested(0, false, voteNullifier, proposer.address),
-      )
-        .to.be.revertedWithCustomError(govGate, "DoubleVoting")
-        .withArgs(voteNullifier);
-    });
-
-    it("should reject proposeAttested from non-ATTESTER_ROLE", async function () {
-      await expect(
-        govGate
-          .connect(proposer)
-          .proposeAttested(ATTESTED_DESC, 12345, proposer.address),
-      ).to.be.reverted;
-    });
-
-    it("should reject voteAttested from non-ATTESTER_ROLE", async function () {
-      // First create a proposal via attester
-      await govGate
-        .connect(attester)
-        .proposeAttested(ATTESTED_DESC, ATTESTED_NULLIFIER, proposer.address);
-
-      await expect(
-        govGate.connect(voter).voteAttested(0, true, 54321, voter.address),
-      ).to.be.reverted;
-    });
-
-    it("should share nullifier space between direct and attested paths", async function () {
-      // Use a nullifier via direct path
-      await govGate
-        .connect(proposer)
-        .propose(DESCRIPTION_HASH, ROOT, NULLIFIER_HASH, PROOF);
-
-      // Attempt to reuse same nullifier via attested path
-      await expect(
-        govGate
-          .connect(attester)
-          .proposeAttested(ATTESTED_DESC, NULLIFIER_HASH, voter.address),
-      )
-        .to.be.revertedWithCustomError(govGate, "DoubleVoting")
-        .withArgs(NULLIFIER_HASH);
-    });
-
-    it("should allow attested proposal to be executed after voting", async function () {
-      await govGate
-        .connect(attester)
-        .proposeAttested(ATTESTED_DESC, ATTESTED_NULLIFIER, proposer.address);
-      await govGate
-        .connect(attester)
-        .voteAttested(0, true, 888888, voter.address);
-
-      for (let i = 0; i < 7201; i++) await ethers.provider.send("evm_mine", []);
-
-      await expect(govGate.execute(0))
-        .to.emit(govGate, "ProposalExecuted")
-        .withArgs(0);
-
-      const proposal = await govGate.getProposal(0);
-      expect(proposal.executed).to.be.true;
+        upgrades.upgradeProxy(
+          await govGate.getAddress(),
+          GovernanceGateFactory,
+        ),
+      ).to.be.revertedWithCustomError(govGate, "AccessControlUnauthorizedAccount");
     });
   });
 });

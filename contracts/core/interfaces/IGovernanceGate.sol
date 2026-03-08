@@ -3,164 +3,65 @@ pragma solidity ^0.8.23;
 
 /**
  * @title IGovernanceGate
- * @notice Sybil-resistant governance module that requires World ID proof-of-humanness
- *         for voting on sentinel configuration changes.
+ * @notice Minimal governance module with admin-only configuration and emergency pause controls.
  */
 interface IGovernanceGate {
-    struct Proposal {
-        uint256 proposalId;
-        bytes32 descriptionHash;
-        address proposer;
-        uint256 forVotes;
-        uint256 againstVotes;
-        uint256 startBlock;
-        uint256 endBlock;
-        bool executed;
-    }
-
-    /// @notice Stores a user-submitted IDKit proof awaiting CRE off-chain verification.
-    struct PendingRequest {
-        address requester;
-        bytes32 descriptionHash;
-        bytes idkitResponse; // Raw IDKit JSON response (forwarded to World ID Verify API)
-        bool processed;
-        uint256 submittedBlock;
+    struct Config {
+        uint16 confidenceThreshold; // e.g., 8500 = 85%
+        uint256 emergencyPauseDelay; // Blocks before pause takes effect
     }
 
     // ─── Errors ───
-    error ProposalAlreadyExecuted(uint256 proposalId);
-    error ProposalNotActive(uint256 proposalId);
-    error ProposalExpired(uint256 proposalId);
-    error ProposalNotPassed(uint256 proposalId);
-    error DoubleVoting(uint256 nullifierHash);
-    error InvalidProof();
-    error GovernanceNotConfigured();
-    error RequestAlreadyProcessed(uint256 requestId);
-    error InvalidIdkitResponse();
+    error InvalidThreshold(uint16 threshold);
 
-    // ─── Actions (Direct On-Chain Verification) ───
+    // ─── Admin Configuration ───
 
     /**
-     * @notice Submit a proposal (requires on-chain World ID verification).
-     * @param descriptionHash Hash of the proposal text/details.
-     * @param root World ID Merkle root.
-     * @param nullifierHash Prevents double-voting/proposing.
-     * @param proof Groth16 ZK proof.
-     * @return proposalId Unique identifier for the proposal.
+     * @notice Update the confidence threshold for threat detection.
      */
-    function propose(
-        bytes32 descriptionHash,
-        uint256 root,
-        uint256 nullifierHash,
-        uint256[8] calldata proof
-    ) external returns (uint256 proposalId);
+    function setConfidenceThreshold(uint16 newThreshold) external;
 
     /**
-     * @notice Cast a vote (requires on-chain World ID verification).
-     * @param proposalId The ID of the proposal to vote on.
-     * @param support Whether to support (true) or oppose (false) the proposal.
-     * @param root World ID Merkle root.
-     * @param nullifierHash Prevents double-voting.
-     * @param proof Groth16 ZK proof.
+     * @notice Update the emergency pause delay.
      */
-    function vote(
-        uint256 proposalId,
-        bool support,
-        uint256 root,
-        uint256 nullifierHash,
-        uint256[8] calldata proof
-    ) external;
+    function setEmergencyPauseDelay(uint256 newDelay) external;
 
-    // ─── Proof Queue (User → On-Chain → CRE Off-Chain Verification) ───
+    // ─── Emergency Controls ───
 
     /**
-     * @notice Submit an IDKit proof for off-chain verification by the CRE DON.
-     * @dev The raw IDKit response JSON is stored on-chain. The CRE workflow reads
-     *      it, forwards it to POST /api/v4/verify/{rp_id}, and writes the result
-     *      back via proposeAttested/voteAttested.
-     * @param idkitResponse The raw IDKit JSON response bytes (proof, nullifier, merkle_root, etc.).
-     * @param descriptionHash Hash of the proposal text/details.
-     * @return requestId The unique identifier for the pending request.
+     * @notice Trigger emergency pause of all sentinel actions.
      */
-    function submitProofRequest(
-        bytes calldata idkitResponse,
-        bytes32 descriptionHash
-    ) external returns (uint256 requestId);
+    function emergencyPause() external;
 
     /**
-     * @notice Read a pending proof request.
-     * @param requestId The ID of the pending request.
-     * @return The pending request data.
+     * @notice Lift the emergency pause (admin only).
      */
-    function getPendingRequest(
-        uint256 requestId
-    ) external view returns (PendingRequest memory);
+    function unpause() external;
 
     /**
-     * @notice Number of pending proof requests.
+     * @notice Check if the system is paused.
      */
-    function pendingRequestCount() external view returns (uint256);
+    function isPaused() external view returns (bool);
 
-    // ─── Actions (CRE DON-Attested — Off-Chain Verification) ───
+    // ─── Config Getters ───
 
     /**
-     * @notice Submit a proposal with a DON-attested World ID proof.
-     * @dev Called by RaizoConsumer after the CRE workflow verified the proof
-     *      off-chain via World ID API. Requires ATTESTER_ROLE.
-     * @param descriptionHash Hash of the proposal text/details.
-     * @param nullifierHash Prevents double-proposing (sybil resistance).
-     * @param proposer The address of the human who submitted the proof.
-     * @return proposalId Unique identifier for the proposal.
+     * @notice Get the current confidence threshold.
      */
-    function proposeAttested(
-        bytes32 descriptionHash,
-        uint256 nullifierHash,
-        address proposer
-    ) external returns (uint256 proposalId);
+    function getConfidenceThreshold() external view returns (uint16);
 
     /**
-     * @notice Cast a vote with a DON-attested World ID proof.
-     * @dev Called by RaizoConsumer after the CRE workflow verified the proof
-     *      off-chain via World ID API. Requires ATTESTER_ROLE.
-     * @param proposalId The ID of the proposal to vote on.
-     * @param support Whether to support (true) or oppose (false) the proposal.
-     * @param nullifierHash Prevents double-voting (sybil resistance).
-     * @param voter The address of the human who submitted the proof.
+     * @notice Get the current emergency pause delay.
      */
-    function voteAttested(
-        uint256 proposalId,
-        bool support,
-        uint256 nullifierHash,
-        address voter
-    ) external;
+    function getEmergencyPauseDelay() external view returns (uint256);
 
     /**
-     * @notice Execute a passed proposal.
-     * @param proposalId The ID of the proposal to execute.
+     * @notice Get the full configuration.
      */
-    function execute(uint256 proposalId) external;
-
-    // ─── State ───
-
-    function getProposal(
-        uint256 proposalId
-    ) external view returns (Proposal memory);
+    function getConfig() external view returns (Config memory);
 
     // ─── Events ───
-    event ProposalCreated(
-        uint256 indexed proposalId,
-        address indexed proposer,
-        bytes32 descriptionHash
-    );
-    event VoteCast(
-        uint256 indexed proposalId,
-        address indexed voter,
-        bool support
-    );
-    event ProposalExecuted(uint256 indexed proposalId);
-    event VerificationRequested(
-        uint256 indexed requestId,
-        address indexed requester,
-        bytes32 descriptionHash
-    );
+    event ConfigUpdated(string paramName, uint256 newValue);
+    event EmergencyPauseTriggered(address indexed pauser);
+    event PauseLifted(address indexed unpauser);
 }
