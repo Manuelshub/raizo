@@ -5,17 +5,17 @@ task("raizo-status", "Prints the current status of all registered protocols")
   .addOptionalParam(
     "core",
     "RaizoCore address",
-    "0x85EC882f1cE7F310Ce6D12379B505d7589b34Ac3",
+    "0xc52009177331A66ee06d2cC11E51D885Fcb67cBe",
   )
   .addOptionalParam(
     "sentinel",
     "SentinelActions address",
-    "0x7832c3Cdea8EAD7206BfE54e3B24679C2975d787",
+    "0x6721e1C5D038880C64d2AEf073eF146f9Ae71C3e",
   )
   .addOptionalParam(
     "vault",
     "ComplianceVault address",
-    "0x92B10171c849f3b9DBE355658eFE7E84084E42B9",
+    "0x70fa099b0b667EE5F01E992D48855d804C8F92b0",
   )
   .setAction(async (taskArgs, hre: HardhatRuntimeEnvironment) => {
     const { ethers } = hre;

@@ -1,8 +1,8 @@
 import { ethers } from "hardhat";
 
 async function main() {
-  const complianceVaultAddress = "0x92B10171c849f3b9DBE355658eFE7E84084E42B9";
-  const raizoConsumerAddress = "0xd96b4ABfE8097AD706D1aD786cE518E210339639";
+  const complianceVaultAddress = "0x70fa099b0b667EE5F01E992D48855d804C8F92b0";
+  const raizoConsumerAddress = "0xCfD3071B32C3aBf8EbaADA62C9671e8598B3bB9B";
 
   console.log(
     `Granting ANCHOR_ROLE to ${raizoConsumerAddress} on ComplianceVault ${complianceVaultAddress}...`,

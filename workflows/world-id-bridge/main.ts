@@ -7,7 +7,7 @@ import {
   type Runtime,
   type NodeRuntime,
   getNetwork,
-  LAST_FINALIZED_BLOCK_NUMBER,
+  LATEST_BLOCK_NUMBER,
   encodeCallMsg,
   bytesToHex,
   hexToBase64,
@@ -25,9 +25,6 @@ import {
   stringToHex,
 } from "viem";
 
-// ---------------------------------------------------------------------------
-// Configuration & Types
-// ---------------------------------------------------------------------------
 
 type Config = {
   schedule: string;
@@ -56,9 +53,6 @@ interface WorldIDVerifyResponse {
   }>;
 }
 
-// ---------------------------------------------------------------------------
-// ABIs
-// ---------------------------------------------------------------------------
 
 const GOVERNANCE_GATE_ABI = [
   {
@@ -96,9 +90,6 @@ const GOVERNANCE_GATE_ABI = [
   },
 ] as const;
 
-// ---------------------------------------------------------------------------
-// Helper: x402 Internal Logic
-// ---------------------------------------------------------------------------
 
 const submitPaymentReport = (
   runtime: Runtime<Config>,
@@ -115,18 +106,16 @@ const submitPaymentReport = (
   );
 };
 
-// ---------------------------------------------------------------------------
-// Node Mode Task: World ID Verification
-// ---------------------------------------------------------------------------
 
-/**
- * Verifies a real IDKit proof via the World ID Verify API.
- * Runs inside DON node environment (Confidential Compute).
- *
- * The idkitResponseHex is the raw IDKit JSON response read from on-chain,
- * which is forwarded directly to POST /api/v4/verify/{rp_id} as documented
- * in https://docs.world.org/world-id/idkit/integrate#step-5
- */
+const hexToUtf8 = (hex: string): string => {
+  let s = hex.startsWith("0x") ? hex.slice(2) : hex;
+  let str = "";
+  for (let i = 0; i < s.length; i += 2) {
+    str += String.fromCharCode(parseInt(s.substr(i, 2), 16));
+  }
+  return str;
+};
+
 const performVerification = (
   nodeRuntime: NodeRuntime<Config>,
   idkitResponseHex: string,
@@ -137,86 +126,65 @@ const performVerification = (
   // Construct URL: POST /api/v4/verify/{rp_id}
   const verifyUrl = `${worldIdApiUrl}/${rpId}`;
 
-  // Decode the IDKit response from hex (stored on-chain as bytes)
+  // 1. Decode the IDKit response from hex (stored on-chain as bytes)
+  // Transparent Relay: We forward the JSON exactly as it was stored.
   let idkitJson: string;
   try {
-    let hex = idkitResponseHex;
-    if (hex.startsWith("0x")) hex = hex.slice(2);
-    idkitJson = "";
-    for (let i = 0; i < hex.length; i += 2) {
-      idkitJson += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
-    }
+    idkitJson = hexToUtf8(idkitResponseHex);
+    nodeRuntime.log(`[WorldID] Relaying IDKit Response: ${idkitJson}`);
   } catch (err) {
-    nodeRuntime.log(`[WorldID] Failed to decode IDKit response: ${err}`);
+    nodeRuntime.log(`[WorldID] Failed to decode hex to UTF8: ${err}`);
     return {
       verified: false,
-      nullifierHash:
-        "0x0000000000000000000000000000000000000000000000000000000000000000",
+      nullifierHash: "0x0",
     };
   }
 
   nodeRuntime.log(`[WorldID] Endpoint: ${verifyUrl}`);
-  nodeRuntime.log(
-    `[WorldID] Forwarding IDKit response (${idkitJson.length} bytes)`,
-  );
 
   try {
-    // Encode the IDKit JSON to hex for the CRE HTTPClient body
-    let bodyHex = "0x";
-    for (let i = 0; i < idkitJson.length; i++) {
-      bodyHex += idkitJson.charCodeAt(i).toString(16).padStart(2, "0");
-    }
-
+    // 2. Forward the payload AS-IS
     const response = http
       .sendRequest(nodeRuntime, {
         url: verifyUrl,
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: hexToBase64(bodyHex as `0x${string}`),
+        body: hexToBase64(stringToHex(idkitJson)),
       })
       .result();
 
     if (!ok(response)) {
       const statusCode = (response as any).statusCode;
-      nodeRuntime.log(`[WorldID] API returned non-OK status: ${statusCode}`);
+      const errorBody = json(response);
+      nodeRuntime.log(`[WorldID] API returned non-OK status: ${statusCode}. Body: ${JSON.stringify(errorBody)}`);
       return {
         verified: false,
-        nullifierHash:
-          "0x0000000000000000000000000000000000000000000000000000000000000000",
+        nullifierHash: "0x0",
       };
     }
 
+    // 3. Extract the nullifier from the API response for DON consensus
     const parsed = json(response) as unknown as WorldIDVerifyResponse;
-    if (parsed.success) {
-      // Extract nullifier from the first successful result
-      const nullifier =
-        parsed.results?.[0]?.nullifier ||
-        "0x0000000000000000000000000000000000000000000000000000000000000000";
-      nodeRuntime.log(
-        `[WorldID] Verified! Nullifier: ${nullifier.slice(0, 18)}...`,
-      );
-      return { verified: true, nullifierHash: nullifier };
+    if (parsed.success && parsed.results && parsed.results.length > 0) {
+      const result = parsed.results[0];
+      if (result.success) {
+          const nullifier = result.nullifier || "0x0";
+          nodeRuntime.log(`[WorldID] Verified! Nullifier: ${nullifier.slice(0, 18)}...`);
+          return { verified: true, nullifierHash: nullifier };
+      } else {
+          nodeRuntime.log(`[WorldID] Result failed: ${result.code} - ${result.detail}`);
+          return { verified: false, nullifierHash: "0x0" };
+      }
     } else {
-      nodeRuntime.log(`[WorldID] Rejected: ${parsed.code} - ${parsed.detail}`);
-      return {
-        verified: false,
-        nullifierHash:
-          "0x0000000000000000000000000000000000000000000000000000000000000000",
-      };
+      nodeRuntime.log(`[WorldID] Request failed: ${parsed.code} - ${parsed.detail}`);
+      return { verified: false, nullifierHash: "0x0" };
     }
   } catch (err) {
-    nodeRuntime.log(`[WorldID] Error during verification: ${err}`);
-    return {
-      verified: false,
-      nullifierHash:
-        "0x0000000000000000000000000000000000000000000000000000000000000000",
-    };
+    nodeRuntime.log(`[WorldID] Error during relay: ${err}`);
+    return { verified: false, nullifierHash: "0x0" };
   }
 };
 
-// ---------------------------------------------------------------------------
-// Main Handler
-// ---------------------------------------------------------------------------
 
 const onCronTrigger = async (runtime: Runtime<Config>) => {
   const {
@@ -225,7 +193,6 @@ const onCronTrigger = async (runtime: Runtime<Config>) => {
     chainName,
     isTestnet,
     gasLimit,
-    operatorAddress,
   } = runtime.config;
 
   runtime.log(`=== Raizo World ID Bridge: Cycle Start (${chainName}) ===`);
@@ -252,7 +219,7 @@ const onCronTrigger = async (runtime: Runtime<Config>) => {
             functionName: "pendingRequestCount",
           }),
         }),
-        blockNumber: LAST_FINALIZED_BLOCK_NUMBER,
+        blockNumber: LATEST_BLOCK_NUMBER,
       })
       .result();
 
@@ -261,13 +228,14 @@ const onCronTrigger = async (runtime: Runtime<Config>) => {
       functionName: "pendingRequestCount",
       data: bytesToHex(reply.data) as `0x${string}`,
     }) as bigint;
+    runtime.log(`[State] Total pending requests found: ${pendingCount}`);
   } catch (err) {
     runtime.log(`[State] Error reading pendingRequestCount: ${err}`);
   }
 
   if (pendingCount === 0n) {
-    runtime.log("[Raizo] No pending verification requests. Cycle complete.");
-    return "NoPending";
+    runtime.log("=== Raizo Threat Sentinel: Scan complete ===");
+    return "Success";
   }
 
   // 2. Scan for the most recent unprocessed request (iterate backwards)
@@ -289,7 +257,7 @@ const onCronTrigger = async (runtime: Runtime<Config>) => {
               args: [i],
             }),
           }),
-          blockNumber: LAST_FINALIZED_BLOCK_NUMBER,
+          blockNumber: LATEST_BLOCK_NUMBER,
         })
         .result();
 
@@ -386,7 +354,7 @@ const onCronTrigger = async (runtime: Runtime<Config>) => {
     .writeReport(runtime, {
       receiver: consumerAddress,
       report: signedReport,
-      gasConfig: { gasLimit: parseInt(gasLimit, 10) },
+      gasConfig: { gasLimit: gasLimit },
     })
     .result();
 
@@ -399,9 +367,6 @@ const onCronTrigger = async (runtime: Runtime<Config>) => {
   return "Success";
 };
 
-// ---------------------------------------------------------------------------
-// Initialization
-// ---------------------------------------------------------------------------
 
 const initWorkflow = (config: Config) => {
   const cron = new CronCapability();

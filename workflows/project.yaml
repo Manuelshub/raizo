@@ -27,7 +27,7 @@
 staging-settings:
   rpcs:
     - chain-name: ethereum-testnet-sepolia
-      url: https://ethereum-sepolia-rpc.publicnode.com
+      url: https://sepolia.infura.io/v3/0c495c8107e84ec587532d890000578e
 
 # ==========================================================================
 production-settings:

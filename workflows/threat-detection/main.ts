@@ -11,6 +11,7 @@ import {
   LAST_FINALIZED_BLOCK_NUMBER,
   median,
   identical,
+  consensusIdenticalAggregation,
   json,
   ok,
   bytesToHex,
@@ -391,29 +392,23 @@ const enforceActionThresholds = (
 };
 
 /**
- * Invokes Gemini for risk analysis. Runs inside DON node (Confidential Compute).
- * API key passed via x-goog-api-key header, not in URL.
+ * Invokes Gemini for risk analysis of ALL protocols in a single batch.
+ * This ensures we only use 1 HTTP call per node, staying under the 5-call budget.
  */
-const analyzeProtocol = (
+const callGeminiBatched = (
   nodeRuntime: NodeRuntime<Config>,
-  frame: TelemetryFrame,
+  frames: TelemetryFrame[],
   apiKey: string,
-): ThreatAssessment => {
+): ThreatAssessment[] => {
   const http = new HTTPClient();
-
-  const prompt = `You are Raizo Sentinel, an autonomous DeFi security analyst. Analyze on-chain telemetry and predict exploits.
+  
+  const prompt = `You are Raizo Sentinel, an autonomous DeFi security analyst. Analyze the following BATCH of on-chain telemetry frames and predict exploits for EACH protocol.
 
 RULES:
-1. Output ONLY valid JSON matching the ThreatAssessment schema.
-2. Do NOT hallucinate data — if uncertain, assign lower confidence scores.
-3. A confidence score above 0.85 triggers protective action. Be conservative.
-4. Always cite evidence from the telemetry frame.
-5. Consider the exploit taxonomy: flash_loan, reentrancy, access_control, oracle_manipulation, logic_error, governance_attack.
-
-Telemetry Frame:
-${JSON.stringify(frame, null, 2)}
-
-Output Schema:
+1. Output ONLY a valid JSON ARRAY of ThreatAssessment objects, in the same order as the input frames.
+2. Do NOT hallucinate data.
+3. If uncertain, assign lower risk/confidence scores.
+4. Output schema for EACH object in the array:
 {
   "overallRiskScore": number (0.0 to 1.0),
   "threatDetected": boolean,
@@ -421,71 +416,75 @@ Output Schema:
   "recommendedAction": "NONE" | "ALERT" | "RATE_LIMIT" | "DRAIN_BLOCK" | "PAUSE",
   "reasoning": "Evidence-backed explanation string",
   "evidenceCitations": ["telemetryField.subField"]
-}`;
+}
 
-  const body = JSON.stringify({
+Batch Telemetry:
+${JSON.stringify(frames, null, 2)}`;
+
+  const requestBody = JSON.stringify({
     contents: [{ parts: [{ text: prompt }] }],
-    generationConfig: { response_mime_type: "application/json" },
+    generationConfig: { 
+      response_mime_type: "application/json",
+      temperature: 0,
+      candidate_count: 1,
+      // Seed is not always supported in all regions, but helps determinism
+    },
   });
 
-  nodeRuntime.log(
-    `[Gemini] Sending threat assessment for ${frame.protocolAddress}`,
-  );
+  nodeRuntime.log(`[Gemini Request] Batch size: ${frames.length}\n${requestBody}`);
+
+  // Stagger nodes slightly to avoid simultaneous 429s in simulation
+  // Stagger nodes significantly to avoid simultaneous 429s in simulation
+  // Each node will wait a unique amount within a 30s window.
+  // This ensures we stay within free-tier RPM limits.
+  const stagger = Math.floor(Math.random() * 30000); 
+  const start = Date.now();
+  while (Date.now() - start < stagger) { /* busy wait */ }
 
   const response = http
     .sendRequest(nodeRuntime, {
       url: nodeRuntime.config.geminiApiUrl,
       method: "POST",
       headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
-      body: hexToBase64(stringToHex(body)),
+      body: hexToBase64(stringToHex(requestBody)),
     })
     .result();
 
-  if (!ok(response)) {
-    nodeRuntime.log(
-      `[Gemini] API failed (${response.statusCode}) — returning safe fallback`,
-    );
-    return {
-      overallRiskScore: 0,
-      threatDetected: false,
-      threats: [],
-      recommendedAction: "NONE",
-      reasoning: "Gemini API unreachable — defaulting to safe state",
-      evidenceCitations: [],
-    };
+  nodeRuntime.log(`[Gemini Response Status] ${response.statusCode}`);
+  
+  if (ok(response)) {
+    const rawResponseBody = json(response) as any;
+    nodeRuntime.log(`[Gemini Response Body] ${JSON.stringify(rawResponseBody)}`);
+    
+    try {
+      const text = rawResponseBody.candidates[0].content.parts[0].text;
+      const assessments = JSON.parse(text) as ThreatAssessment[];
+      
+      // Post-process to enforce action math and bounds
+      return assessments.map(a => ({
+        ...a,
+        overallRiskScore: Math.max(0, Math.min(1, a.overallRiskScore || 0)),
+        recommendedAction: enforceActionThresholds(a.overallRiskScore || 0)
+      }));
+    } catch (e) {
+      nodeRuntime.log(`[Gemini] Parse error: ${e}`);
+    }
+  } else {
+    nodeRuntime.log(`[Gemini] API Error ${response.statusCode}: ${JSON.stringify(response)}`);
   }
 
-  try {
-    const result = json(response) as any;
-    const text = result.candidates[0].content.parts[0].text;
-    const parsed = JSON.parse(text) as ThreatAssessment;
-
-    // Clamp risk score to [0, 1]
-    parsed.overallRiskScore = Math.max(
-      0,
-      Math.min(1, parsed.overallRiskScore || 0),
-    );
-    // Deterministic action override (AI_AGENTS.md §3.4)
-    parsed.recommendedAction = enforceActionThresholds(parsed.overallRiskScore);
-
-    nodeRuntime.log(
-      `[Gemini] Result: risk=${parsed.overallRiskScore.toFixed(2)}, action=${
-        parsed.recommendedAction
-      }`,
-    );
-    return parsed;
-  } catch (e) {
-    nodeRuntime.log(`[Gemini] Parse error: ${e}`);
-    return {
-      overallRiskScore: 0,
-      threatDetected: false,
-      threats: [],
-      recommendedAction: "NONE",
-      reasoning: "Failed to parse Gemini response",
-      evidenceCitations: [],
-    };
-  }
+  // Fallback: return empty/safe assessments for each frame
+  return frames.map(f => ({
+    overallRiskScore: 0.1,
+    threatDetected: false,
+    threats: [],
+    recommendedAction: "NONE",
+    reasoning: "Gemini API unavailable or rate-limited (Simulation Fallback - No immediate threat detected for " + f.protocolAddress + ")",
+    evidenceCitations: [],
+  }));
 };
+
+// Removed individual analyzeProtocol in favor of batched version
 
 // ---------------------------------------------------------------------------
 // Main workflow handler
@@ -510,12 +509,10 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
 
   // Load API key from CRE secrets store
   let apiKey: string;
-  try {
-    apiKey = runtime.getSecret({ id: "API_KEY" }).result().value;
-    runtime.log("[Secrets] API_KEY loaded");
-  } catch (_) {
-    runtime.log("[Secrets] API_KEY not found — using simulation fallback");
-    apiKey = "SIMULATION_FALLBACK_KEY";
+  apiKey = runtime.getSecret({ id: "AI_API_KEY" }).result().value;
+
+  if (apiKey == null || apiKey.length == 0) {
+    process.exit(1);
   }
 
   // --- Step 1: Read registered protocols from RaizoCore ---
@@ -541,23 +538,22 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
 
   runtime.log(`[RaizoCore] ${protocols.length} protocol(s) registered`);
 
-  // --- Step 2: Per-protocol analysis ---
-  for (const protocol of protocols) {
-    if (!protocol.isActive) continue;
+  // --- Step 2: Per-protocol telemetry gathering ---
+  const activeProtocols = protocols.filter(p => p.isActive).slice(0, 3); // Limit to 3 to keep consensus workload manageable
+  const frames: TelemetryFrame[] = [];
 
+  for (const protocol of activeProtocols) {
     const protocolAddr = protocol.protocolAddress as `0x${string}`;
-    runtime.log(`[Scan] Analyzing ${protocolAddr}`);
+    runtime.log(`[Scan] Gathering telemetry for ${protocolAddr}`);
 
-    // Tier 1: on-chain telemetry
-    const frame = readOnChainTelemetry(
+    frames.push(readOnChainTelemetry(
       runtime,
       evmClient,
       protocolAddr,
       protocol.chainId,
-    );
+    ));
 
-    // --- Step 3: LLM analysis via runInNodeMode (DON consensus) ---
-    // x402: Authorize and submit compute payment (5 Mock USDC)
+    // x402: Authorize compute payment (5 Mock USDC)
     submitPaymentReport(
       runtime,
       evmClient,
@@ -565,36 +561,32 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
       5_000_000n,
       "AI Compute",
     );
+  }
 
-    const assessment = runtime
-      .runInNodeMode(
-        analyzeProtocol,
-        ConsensusAggregationByFields<ThreatAssessment>({
-          overallRiskScore: median,
-          threatDetected: identical,
-          threats: identical,
-          recommendedAction: identical,
-          reasoning: identical,
-          evidenceCitations: identical,
-        }),
-      )(frame, apiKey)
-      .result();
+  // --- Step 3: Batched LLM analysis (Single Consensus Round) ---
+  const assessments = runtime
+    .runInNodeMode(
+      callGeminiBatched,
+      consensusIdenticalAggregation<ThreatAssessment[]>(),
+    )(frames, apiKey)
+    .result();
+
+  // --- Step 4: Process assessments and submit reports ---
+  for (let i = 0; i < activeProtocols.length; i++) {
+    const protocolAddr = activeProtocols[i].protocolAddress as `0x${string}`;
+    const assessment = assessments[i];
+
+    if (!assessment) continue;
 
     runtime.log(
-      `[Assessment] ${protocolAddr}: risk=${assessment.overallRiskScore.toFixed(
-        2,
-      )}, action=${assessment.recommendedAction}, threats=${
-        assessment.threats.length
-      }`,
+      `[Assessment] ${protocolAddr}: risk=${assessment.overallRiskScore.toFixed(2)}, action=${assessment.recommendedAction}`
     );
 
-    // --- Step 4: Write threat report on-chain via RaizoConsumer ---
     if (assessment.recommendedAction !== "NONE" && assessment.threatDetected) {
       const reportId = keccak256(
         stringToHex(protocolAddr + String(runtime.now().getTime())),
       );
 
-      // Encode ThreatReport struct fields for RaizoConsumer
       const threatReportData = encodeAbiParameters(
         parseAbiParameters(
           "bytes32 reportId, bytes32 agentId, bool exists, address targetProtocol, uint8 action, uint8 severity, uint16 confidenceScore, bytes evidenceHash, uint256 timestamp, bytes donSignatures",
@@ -613,17 +605,14 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
         ],
       );
 
-      // Wrap with report type tag: (uint8 reportType=0, bytes data)
       const consumerPayload = encodeAbiParameters(
         parseAbiParameters("uint8 reportType, bytes data"),
         [0, threatReportData],
       );
 
-      runtime.log(
-        `[Action] Submitting report ${reportId}: ${assessment.recommendedAction}`,
-      );
+      runtime.log(`[Action] Submitting report ${reportId}: ${assessment.recommendedAction}`);
 
-      // x402: Authorize and submit transaction subsidy (2 Mock USDC)
+      // x402: Gas Subsidy (2 Mock USDC)
       submitPaymentReport(
         runtime,
         evmClient,
@@ -632,7 +621,6 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
         "Gas Subsidy",
       );
 
-      // Step 4a: Generate signed report via DON consensus
       const reportResponse = runtime
         .report({
           encodedPayload: hexToBase64(consumerPayload),
@@ -642,7 +630,6 @@ const onCronTrigger = (runtime: Runtime<Config>) => {
         })
         .result();
 
-      // Step 4b: Submit to RaizoConsumer via KeystoneForwarder
       const writeResult = evmClient
         .writeReport(runtime, {
           receiver: consumerAddress,

@@ -291,7 +291,7 @@
     <script src="https://cdn.jsdelivr.net/npm/qrcode@1/build/qrcode.min.js"></script>
 
     <script>
-      const APP_ID = "app_f50f0c294fd5aef73d093bc24c44c01c";
+      const APP_ID = "rp_aa1cd1f82b8d58fa";
       const RP_ID = "rp_aa1cd1f82b8d58fa";
       const ACTION = "raizo-governance-propose";
 
@@ -320,16 +320,29 @@
         setStatus(1, "Generating IDKit verification request...", "info");
 
         try {
-          // In production, the RP signature would come from your backend
-          // For the staging simulator, we can use a simplified flow
+          // Fetch the signed rp_context from our local backend proxy (Same-Origin)
+          setStatus(1, "Fetching signed rp_context from local backend...", "info");
+          const signRes = await fetch("/sign");
+          if (!signRes.ok) throw new Error("Backend failed to sign request");
+          const rpSignature = await signRes.json();
+          console.log(rpSignature);
+
           const request = await window.IDKit.request({
             app_id: APP_ID,
             action: ACTION,
+            rp_context: {
+              rp_id: RP_ID,
+              nonce: rpSignature.nonce,
+              created_at: rpSignature.createdAt,
+              expires_at: rpSignature.expiresAt,
+              signature: rpSignature.sig,
+            },
             allow_legacy_proofs: true,
             environment: "staging", // Use simulator
-          }).preset(window.orbLegacy());
+          }).preset(window.orbLegacy({ signal: "" }));
 
           const connectUrl = request.connectorURI;
+          console.log(connectUrl);
 
           // Show QR code
           showStep(2);
